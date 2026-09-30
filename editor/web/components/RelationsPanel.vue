@@ -394,28 +394,40 @@ function tagOfConflict(tag) {
 </script>
 
 <template>
-  <div class="relations">
-    <header class="relations-head">
-      <span>关系</span>
-      <span class="muted">
+  <div class="view relations">
+    <header class="view-head">
+      <h2 class="view-title">
+        <span class="icon lg" aria-hidden="true">🔗</span>
+        <span>关系</span>
+      </h2>
+      <p class="view-sub">
         标签是站点级别的对象：改一个标签会改掉所有用到它的文档，所以先看改动清单再确认写入。
-      </span>
-      <span class="spacer"></span>
-      <span class="views">
-        <button type="button" :class="{ active: tab === 'tags' }" @click="tab = 'tags'">标签</button>
-        <button type="button" :class="{ active: tab === 'links' }" @click="tab = 'links'">链接</button>
-      </span>
-      <button v-if="tab === 'tags'" type="button" class="mini" :disabled="busy || loadingTags" @click="loadTags">刷新</button>
-      <button v-else type="button" class="mini" :disabled="busy || loadingLinks" @click="loadLinks()">重新读取</button>
+      </p>
     </header>
 
-    <p v-if="error" class="error">关系操作失败：{{ error }}</p>
+    <div class="toolbar relations-toolbar">
+      <div class="segmented" role="group" aria-label="关系视图">
+        <button type="button" :aria-pressed="tab === 'tags'" @click="tab = 'tags'">标签</button>
+        <button type="button" :aria-pressed="tab === 'links'" @click="tab = 'links'">链接</button>
+      </div>
+      <span class="spacer"></span>
+      <button v-if="tab === 'tags'" type="button" class="btn mini" :disabled="busy || loadingTags" @click="loadTags">
+        <span class="icon sm" aria-hidden="true">↻</span>
+        <span>刷新</span>
+      </button>
+      <button v-else type="button" class="btn mini" :disabled="busy || loadingLinks" @click="loadLinks()">
+        <span class="icon sm" aria-hidden="true">↻</span>
+        <span>重新读取</span>
+      </button>
+    </div>
+
+    <p v-if="error" class="error-line">关系操作失败：{{ error }}</p>
     <p v-if="message" class="flash">{{ message }}</p>
 
     <!-- the plan the user is confirming: one file at a time, every diff shown -->
-    <div v-if="pending?.conflict" class="panel plan">
+    <div v-if="pending?.conflict" class="panel">
       <header class="panel-head">
-        <b>需要先决定</b>
+        <span class="panel-title">需要先决定</span>
         <span class="badge">409</span>
         <span class="spacer"></span>
         <button type="button" class="mini" @click="cancelPending">取消</button>
@@ -428,9 +440,9 @@ function tagOfConflict(tag) {
       </p>
     </div>
 
-    <div v-else-if="pending?.plan" class="panel plan">
+    <div v-else-if="pending?.plan" class="panel">
       <header class="panel-head">
-        <b>{{ pending.title }}</b>
+        <span class="panel-title">{{ pending.title }}</span>
         <span class="badge">{{ pending.plan.noop ? '无改动' : `${pending.plan.counts.total} 个文件` }}</span>
         <span class="spacer"></span>
         <button type="button" class="mini" :disabled="busy" @click="cancelPending">取消</button>
@@ -458,28 +470,38 @@ function tagOfConflict(tag) {
     </div>
 
     <!-- tags -->
-    <div v-if="tab === 'tags'" class="body">
-      <aside class="sidebar">
-        <div class="sidebar-head">
-          <span>标签（{{ tags.length }}）</span>
+    <div v-if="tab === 'tags'" class="relations-body">
+      <aside class="relations-side">
+        <div class="side-head">
+          <span class="panel-title">标签</span>
+          <span class="badge">{{ tags.length }}</span>
           <span class="spacer"></span>
-          <input v-model="filter" class="search" type="search" placeholder="筛选标签" />
+          <label class="search relations-filter">
+            <span class="icon sm" aria-hidden="true">🔍</span>
+            <input v-model="filter" type="search" placeholder="筛选标签" aria-label="筛选标签" />
+          </label>
         </div>
         <p v-if="loadingTags" class="muted">加载中…</p>
         <p v-else-if="visibleTags.length === 0" class="muted">没有匹配的标签。</p>
-        <ul class="tag-list">
-          <li
-            v-for="tag in visibleTags"
-            :key="tag.identity"
-            :class="{ active: selected?.identity === tag.identity, orphan: tag.orphan }"
-            @click="openTag(tag)"
-          >
-            <b>{{ tag.name }}</b>
-            <span class="badge">{{ tag.usage }}</span>
-            <span v-if="tagOfConflict(tag)" class="badge warn" title="多种写法会被 Hugo 合并为同一个 term">同义 {{ tag.names.length }}</span>
-            <span v-if="tag.metadataPages.length" class="badge" title="有元数据页">页</span>
-            <span v-if="tag.orphan" class="badge" title="没有文档使用这个标签">孤立页</span>
-            <span class="muted">{{ tag.languages.join(' ') }}</span>
+        <ul class="list">
+          <li v-for="tag in visibleTags" :key="tag.identity">
+            <button
+              type="button"
+              class="list-item selectable"
+              :class="{ selected: selected?.identity === tag.identity, orphan: tag.orphan }"
+              @click="openTag(tag)"
+            >
+              <span class="body">
+                <span class="row-titles">
+                  <span class="title">{{ tag.name }}</span>
+                  <span class="badge accent">{{ tag.usage }}</span>
+                  <span v-if="tagOfConflict(tag)" class="badge warn" title="多种写法会被 Hugo 合并为同一个 term">同义 {{ tag.names.length }}</span>
+                  <span v-if="tag.metadataPages.length" class="badge" title="有元数据页">页</span>
+                  <span v-if="tag.orphan" class="badge warn" title="没有文档使用这个标签">孤立页</span>
+                </span>
+                <span class="meta">{{ tag.languages.join(' ') }}</span>
+              </span>
+            </button>
           </li>
         </ul>
         <p class="hint">
@@ -488,7 +510,7 @@ function tagOfConflict(tag) {
         </p>
       </aside>
 
-      <main class="main">
+      <main class="relations-main">
         <div v-if="!selected" class="panel">
           <p class="muted">从左侧选择一个标签，查看它被哪些文档使用，并对整站重命名或合并。</p>
           <p v-if="conflictTags.length" class="warn-line">
@@ -499,7 +521,7 @@ function tagOfConflict(tag) {
         <template v-else>
           <div class="panel">
             <header class="panel-head">
-              <b>{{ selected.name }}</b>
+              <span class="panel-title">{{ selected.name }}</span>
               <span class="badge">term <code>{{ selected.identity }}</code></span>
               <span class="muted">{{ selected.usage }} 份文档 · 语言 {{ selected.languages.join(' ') || '—' }}</span>
               <span class="spacer"></span>
@@ -510,13 +532,13 @@ function tagOfConflict(tag) {
               ⚠ 同一 term 有两种写法：{{ selected.names.map((entry) => `${entry.name}（${entry.count}）`).join('、') }} — Hugo 视为同一个标签。
             </p>
             <div class="row">
-              <label>新名称</label>
+              <span class="field-label">新名称</span>
               <input v-model="renameTarget" type="text" placeholder="例如 Hugo Editor 或 hugo-editor" />
               <button type="button" class="mini" :disabled="busy" @click="planTagRename('rename')">预览重命名</button>
               <button type="button" class="mini" :disabled="busy" @click="planTagRename('merge')">预览合并</button>
             </div>
             <div class="row">
-              <label>元数据页</label>
+              <span class="field-label">元数据页</span>
               <input v-model="pageName" type="text" :placeholder="pagePlaceholder" />
               <button type="button" class="mini" :disabled="busy" @click="planTagPage">预览创建</button>
               <span class="muted">只在明确需要时创建：本站的标签默认没有元数据页。</span>
@@ -527,27 +549,31 @@ function tagOfConflict(tag) {
 
           <section v-for="group in detail?.groups ?? []" :key="group.translationKey" class="panel group">
             <header class="panel-head">
-              <b>{{ group.translationKey }}</b>
+              <span class="panel-title">{{ group.translationKey }}</span>
               <span class="muted">{{ group.members.length }} 个语言版本</span>
             </header>
-            <ul class="doc-list">
-              <li v-for="member in group.members" :key="member.path">
-                <span class="doc-title">{{ member.title ?? '（无标题）' }}</span>
-                <code class="muted">{{ member.path }}</code>
+            <ul class="list">
+              <li v-for="member in group.members" :key="member.path" class="list-item">
+                <span class="body">
+                  <span class="title">{{ member.title ?? '（无标题）' }}</span>
+                  <span class="meta">{{ member.path }}</span>
+                </span>
                 <span class="badge">{{ member.language }}</span>
-                <span class="muted">写作 {{ member.tag }}</span>
+                <span class="count">写作 {{ member.tag }}</span>
                 <span class="spacer"></span>
-                <button type="button" class="mini" :disabled="busy" @click="openDocumentTags(member.path)">
-                  {{ editingPath === member.path ? '收起标签' : '编辑标签' }}
-                </button>
+                <span class="actions">
+                  <button type="button" class="mini" :disabled="busy" @click="openDocumentTags(member.path)">
+                    {{ editingPath === member.path ? '收起标签' : '编辑标签' }}
+                  </button>
+                </span>
               </li>
             </ul>
-            <div v-if="group.members.some((member) => member.path === editingPath)" class="panel inline">
+            <div v-if="group.members.some((member) => member.path === editingPath)" class="panel-body inline-editor">
               <p>
                 当前标签：
                 <span v-for="tag in editingTags" :key="tag" class="chip">
                   {{ tag }}
-                  <button type="button" class="x" :disabled="busy" title="移除" @click="planTagEdit(editingPath, { remove: [tag] })">×</button>
+                  <button type="button" class="chip-x" :disabled="busy" title="移除" aria-label="移除标签" @click="planTagEdit(editingPath, { remove: [tag] })">×</button>
                 </span>
                 <span v-if="editingTags.length === 0" class="muted">（没有标签）</span>
               </p>
@@ -572,9 +598,9 @@ function tagOfConflict(tag) {
     </div>
 
     <!-- links -->
-    <div v-else class="body">
-      <aside class="sidebar">
-        <div class="sidebar-head">
+    <div v-else class="relations-body">
+      <aside class="relations-side">
+        <div class="side-head">
           <span>文档</span>
           <span class="spacer"></span>
           <button type="button" class="mini" :disabled="busy" @click="loadLinks('page/links/index.md')">链接页</button>
@@ -585,20 +611,27 @@ function tagOfConflict(tag) {
         </div>
         <details class="doc-pick-box">
           <summary>从文档列表里选（{{ documentsWithLinksHint.length }}）</summary>
-          <ul class="doc-pick">
-            <li v-for="doc in documentsWithLinksHint" :key="doc.path" :class="{ active: doc.path === linksPath }" @click="loadLinks(doc.path)">
-              <code>{{ doc.path }}</code>
+          <ul class="list">
+            <li v-for="doc in documentsWithLinksHint" :key="doc.path">
+              <button
+                type="button"
+                class="list-item selectable"
+                :class="{ selected: doc.path === linksPath }"
+                @click="loadLinks(doc.path)"
+              >
+                <span class="meta">{{ doc.path }}</span>
+              </button>
             </li>
           </ul>
         </details>
       </aside>
 
-      <main class="main">
+      <main class="relations-main">
         <p v-if="loadingLinks" class="muted">读取中…</p>
         <template v-else-if="linksView">
           <div class="panel">
             <header class="panel-head">
-              <b>{{ linksView.path }}</b>
+              <span class="panel-title">{{ linksView.path }}</span>
               <span v-if="linksView.present" class="badge">{{ linksView.style }}</span>
               <span v-else class="badge warn">没有 links 字段</span>
               <span class="muted">bundle {{ linksView.bundlePath ?? '（无）' }} · 键顺序 {{ linksView.keyOrder.join(' → ') }}</span>
@@ -615,7 +648,7 @@ function tagOfConflict(tag) {
 
           <section v-for="(row, index) in rows" :key="row.originalIndex ?? `new-${index}`" class="panel item" :class="{ removed: row.removed }">
             <header class="panel-head">
-              <b>{{ row.originalIndex === null ? '新增' : `第 ${row.originalIndex} 项` }}</b>
+              <span class="panel-title">{{ row.originalIndex === null ? '新增' : `第 ${row.originalIndex} 项` }}</span>
               <span v-if="row.imageRef" class="badge">{{ row.imageRef.kind }}</span>
               <span v-if="row.imageRef?.resourcePath" class="muted">{{ row.imageRef.resourcePath }}</span>
               <span class="spacer"></span>
@@ -625,28 +658,28 @@ function tagOfConflict(tag) {
                 {{ row.removed ? '撤销删除' : '删除' }}
               </button>
             </header>
-            <div class="grid">
-              <label>title</label>
+            <div class="field-grid">
+              <span class="field-label">title</span>
               <input v-model="row.fields.title" type="text" />
-              <label>website</label>
+              <span class="field-label">website</span>
               <input v-model="row.fields.website" type="text" />
-              <label>description</label>
+              <span class="field-label">description</span>
               <input v-model="row.fields.description" type="text" />
-              <label>image</label>
+              <span class="field-label">image</span>
               <input v-model="row.fields.image" type="text" />
             </div>
           </section>
 
           <section class="panel">
-            <header class="panel-head"><b>新增一项</b></header>
-            <div class="grid">
-              <label>title *</label>
+            <header class="panel-head"><span class="panel-title">新增一项</span></header>
+            <div class="field-grid">
+              <span class="field-label">title *</span>
               <input v-model="newLink.title" type="text" />
-              <label>website *</label>
+              <span class="field-label">website *</span>
               <input v-model="newLink.website" type="text" />
-              <label>description</label>
+              <span class="field-label">description</span>
               <input v-model="newLink.description" type="text" />
-              <label>image</label>
+              <span class="field-label">image</span>
               <input v-model="newLink.image" type="text" placeholder="https://... 或同目录文件名" />
             </div>
             <div class="row">
@@ -661,177 +694,161 @@ function tagOfConflict(tag) {
 </template>
 
 <style scoped>
-.relations {
-  flex: 1 1 auto;
+/* Layout only: page chrome, panels, lists, chips, buttons and dialogs all come
+   from base.css, so this file cannot drift from the rest of the app. */
+
+.relations-toolbar {
+  border-bottom: 1px solid var(--border);
+}
+
+/* The plan cards and the error banners sit above the two scrolling columns, so
+   they take the page padding themselves instead of a view body's. */
+.relations > .panel,
+.relations > .error-line,
+.relations > .flash {
+  margin: var(--space-lg) var(--page-pad) 0;
+}
+
+.relations-body {
+  overflow-y: auto;
+  gap: var(--space-lg);
+  padding: var(--space-lg) var(--page-pad) var(--page-pad);
+}
+
+.relations-columns {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: var(--space-lg);
+  align-items: start;
   min-height: 0;
+}
+
+.relations-side,
+.relations-main {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-md);
+  min-width: 0;
+  min-height: 0;
 }
-.relations-head {
+
+.side-head {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-sm);
+  min-height: var(--control-h);
+  padding: 0 var(--space-xs);
+}
+
+.relations-filter {
+  min-width: 0;
+}
+
+.relations-side .list-item,
+.relations-main .list-item {
+  align-items: flex-start;
+}
+
+.relations-main .list-item .body {
+  gap: 2px;
+}
+
+.row-titles {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
   flex-wrap: wrap;
 }
-.relations .body {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  gap: 0.75rem;
-}
-.sidebar {
-  flex: 0 0 22rem;
-  min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.main {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.spacer {
-  flex: 1 1 auto;
-}
-.muted {
-  color: var(--faint);
-  font-size: 0.85rem;
-}
-.views button {
-  margin-left: 0.25rem;
-}
-.views button.active {
-  font-weight: 600;
-  text-decoration: underline;
-}
-.tag-list,
-.doc-list,
-.doc-pick,
-.doc-pick-box {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.doc-pick-box summary {
-  cursor: pointer;
-  color: var(--faint);
-  font-size: 0.85rem;
-  padding: 0.25rem 0.4rem;
-}
-.doc-pick {
-  max-height: 24rem;
-  overflow: auto;
-}
-.tag-list li,
-.doc-pick li {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.3rem 0.4rem;
-  cursor: pointer;
-  border-radius: 4px;
-}
-.tag-list li:hover,
-.doc-pick li:hover {
-  background: var(--surface-hover);
-}
-.tag-list li.active,
-.doc-pick li.active {
-  background: var(--editor-selection);
-}
-.tag-list li.orphan {
+
+.orphan {
   opacity: 0.75;
 }
-.badge.warn {
-  background: var(--warning-soft);
+
+.inline-editor {
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
 }
-.doc-list li {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.2rem 0;
+
+.inline-editor .chip {
+  margin-right: var(--space-xs);
 }
-.doc-title {
-  font-weight: 500;
-}
-.row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-.row label {
-  min-width: 4.5rem;
-  color: var(--faint);
-  font-size: 0.85rem;
-}
-.row input[type='text'],
-.row input[type='search'],
-.search {
-  flex: 1 1 14rem;
-  min-width: 8rem;
-}
-.search {
-  flex: 0 1 9rem;
-}
-.grid {
+
+.field-grid {
   display: grid;
-  grid-template-columns: 6rem 1fr;
-  gap: 0.35rem 0.6rem;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: var(--space-md);
   align-items: center;
 }
-.grid label {
-  color: var(--faint);
-  font-size: 0.85rem;
+
+.field-grid .field-label {
+  color: var(--muted);
+  font-size: var(--text-sm);
 }
-.panel.item.removed {
-  opacity: 0.55;
-  text-decoration: line-through;
-}
-.chip {
+
+.chip-x {
   display: inline-flex;
   align-items: center;
-  gap: 0.25rem;
-  padding: 0.1rem 0.4rem;
-  margin-right: 0.25rem;
-  border-radius: 999px;
-  background: var(--surface-hover);
-}
-.chip .x {
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  padding: 0;
   border: none;
+  border-radius: var(--radius-pill);
   background: transparent;
-  cursor: pointer;
   color: inherit;
-  font-size: 0.9rem;
+  font-size: var(--text-2xs);
   line-height: 1;
-}
-.diff-block {
-  margin-top: 0.35rem;
-}
-.diff-block summary {
   cursor: pointer;
+}
+
+.chip-x:hover:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.chip-x:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.doc-pick-box summary {
+  padding: var(--space-xs) 0;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.panel.removed {
+  opacity: 0.55;
+}
+
+.panel.removed .panel-title {
+  text-decoration: line-through;
+}
+
+.diff-block {
+  margin-top: var(--space-sm);
+}
+
+.diff-block summary {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-sm);
   flex-wrap: wrap;
+  padding: var(--space-xs) 0;
+  cursor: pointer;
+  font-size: var(--text-sm);
 }
-.diff {
-  max-height: 18rem;
-  overflow: auto;
+
+.diff-block .diff {
+  margin-top: var(--space-sm);
+  max-height: 260px;
   white-space: pre-wrap;
-  margin: 0.3rem 0 0;
-  padding: 0.5rem;
-  background: rgba(8, 12, 18, 0.45);
-  border-radius: 4px;
-  font-size: 0.8rem;
 }
-.panel.inline {
-  margin-top: 0.4rem;
+
+@media (max-width: 1100px) {
+  .relations-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 </style>

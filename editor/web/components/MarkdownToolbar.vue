@@ -71,7 +71,7 @@ const groups = TOOLBAR_GROUPS.map((group) => ({
 .md-toolbar-hint {
   margin-left: auto;
   white-space: nowrap;
-  padding-right: var(--space-2);
+  padding-right: var(--space-sm);
 }
 
 .icon-btn {

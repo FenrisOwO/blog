@@ -50,11 +50,43 @@ export function groupCommands(commands) {
   return [...groups.entries()].map(([group, items]) => ({ group, items }));
 }
 
+// One icon per command, so a palette row lines up with the rail entry or the
+// button it runs. Matched by id prefix, which is the registry's own vocabulary.
+const COMMAND_ICONS = [
+  [/^view-content$/, '📄'],
+  [/^view-assets$/, '🖼'],
+  [/^view-relations$/, '🔗'],
+  [/^view-settings$/, '⚙️'],
+  [/^view-git$/, '🌿'],
+  [/^new-/, '➕'],
+  [/^save$/, '💾'],
+  [/^preview-changes$/, '👁'],
+  [/^discard$/, '↩'],
+  [/^build$/, '🏗'],
+  [/^open-preview$/, '🔗'],
+  [/^refresh$/, '↻'],
+  [/^trash$/, '🗑'],
+  [/^toggle-theme$/, '🎨'],
+  [/^theme-/, '🎨'],
+  [/^toggle-list$/, '📄'],
+  [/^toggle-inspector$/, '🔎'],
+  [/^search$/, '🔍'],
+  [/^commit$/, '✅'],
+  [/^git-/, '🌿'],
+  [/^open:/, '📝'],
+];
+
+function iconFor(id) {
+  const hit = COMMAND_ICONS.find(([pattern]) => pattern.test(id));
+  return hit ? hit[1] : '•';
+}
+
 function make(id, group, label, options = {}) {
   return {
     id,
     group,
     label,
+    icon: options.icon ?? iconFor(id),
     shortcut: options.shortcut ?? null,
     keywords: options.keywords ?? [],
     enabled: options.enabled ?? true,
@@ -115,6 +147,10 @@ export function buildCommands(state, actions) {
     make('toggle-inspector', 'View', state.inspectorOpen ? '隐藏检查器' : '显示检查器', {
       keywords: ['inspector', 'sidebar', '检查器'],
       run: actions.toggleInspector,
+    }),
+    make('toggle-list', 'View', state.listOpen ? '隐藏文章列表' : '显示文章列表', {
+      keywords: ['list', 'browser', 'articles', 'selector', 'sidebar', '文章', '列表', '选择'],
+      run: actions.toggleList,
     }),
     make('search', 'View', '在内容中搜索', { shortcut: 'Ctrl+F', keywords: ['find', 'search', '搜索'], run: actions.focusSearch }),
 

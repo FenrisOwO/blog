@@ -5,6 +5,12 @@
 // categories and the content root), so the list is grouped and each group carries its
 // count. Translation groups are marked so "this article also exists in 3 other languages"
 // is visible before anything is edited.
+//
+// The rows use the shell's list primitive (`.list-item` in base.css) and the shared badge:
+// the type, the form, the language and the translation count are the same badge as everywhere
+// else, so a badge cannot drift from the ones in the workspace head or the inspector.
+// The draft marker used to be an inline span inside the title, which is why it sat half a
+// pixel off the baseline; it is a badge in the title's own flex row now.
 
 import { computed } from 'vue';
 
@@ -42,6 +48,8 @@ const groupKind = computed(() => {
   return map;
 });
 
+const SECTION_ICONS = { post: '📝', page: '📄', categories: '🏷' };
+
 // The order comes from the server's scope declaration, then any section it did not name.
 const grouped = computed(() => {
   const bySection = new Map();
@@ -59,6 +67,7 @@ const grouped = computed(() => {
       return {
         section: name,
         label: declared?.label ?? (name === '' ? '(根)' : name),
+        icon: SECTION_ICONS[name] ?? '🏠',
         kinds: [...(groupKind.value.get(name) ?? [])].map(contentKindLabel).join(' / '),
         count: bySection.get(name).length,
         documents: bySection.get(name),
@@ -69,35 +78,47 @@ const grouped = computed(() => {
 
 <template>
   <div class="tree">
-    <section v-for="group in grouped" :key="group.section || '(root)'" class="section">
+    <section v-for="group in grouped" :key="group.section || '(root)'" class="doc-section">
       <header class="section-head">
-        <code>{{ group.label }}</code>
+        <span class="icon sm" aria-hidden="true">{{ group.icon }}</span>
+        <span class="section-label">{{ group.label }}</span>
         <span v-if="group.kinds" class="section-kind">{{ group.kinds }}</span>
+        <span class="spacer"></span>
         <span class="count">{{ group.count }}</span>
       </header>
 
-      <ul class="doc-list">
+      <ul class="list docs">
         <li v-for="doc in group.documents" :key="doc.path">
-          <button type="button" :class="{ active: doc.path === selectedPath }" @click="emit('select', doc)">
-            <span class="title">
-              {{ titleOf(doc) }}
-              <span v-if="doc.meta?.draft" class="draft">草稿</span>
+          <button
+            type="button"
+            class="list-item selectable doc-row"
+            :class="{ selected: doc.path === selectedPath }"
+            :aria-current="doc.path === selectedPath ? 'true' : undefined"
+            :title="doc.path"
+            @click="emit('select', doc)"
+          >
+            <span class="body">
+              <span class="row-titles">
+                <span class="title">{{ titleOf(doc) }}</span>
+                <span v-if="doc.meta?.draft" class="badge warn">草稿</span>
+              </span>
+              <span class="meta">
+                {{ doc.path }}
+                <template v-if="doc.updatedAt"> · {{ formatUpdated(doc.updatedAt) }}</template>
+              </span>
             </span>
+
             <span class="badges">
-              <span class="badge type">{{ contentKindLabel(doc.contentKind) }}</span>
-              <span class="badge kind">{{ formLabel(doc.kind) }}</span>
+              <span class="badge accent">{{ contentKindLabel(doc.contentKind) }}</span>
+              <span class="badge info">{{ formLabel(doc.kind) }}</span>
               <span class="badge">{{ doc.language }}</span>
               <span
                 v-if="translationsOf.get(doc.translationKey) > 1"
-                class="badge tr"
+                class="badge ok"
                 :title="`该页面有 ${translationsOf.get(doc.translationKey)} 个语言版本`"
               >
                 ×{{ translationsOf.get(doc.translationKey) }}
               </span>
-            </span>
-            <span class="path">
-              {{ doc.path }}
-              <span v-if="doc.updatedAt" class="when">· {{ formatUpdated(doc.updatedAt) }}</span>
             </span>
           </button>
         </li>
@@ -110,123 +131,74 @@ const grouped = computed(() => {
 </template>
 
 <style scoped>
+/* The scroll container of the article selector. Rows, badges and the selected
+   state come from base.css; only this pane's own rhythm is set here. */
+
 .tree {
-  overflow-y: auto;
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .section-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 14px 4px;
+  gap: var(--space-sm);
+  min-height: var(--control-h);
+  padding: 0 var(--panel-pad-x);
+  border-bottom: 1px solid var(--border);
   background: var(--surface-2);
-  border-bottom: 1px solid var(--surface-3);
-  font-size: 11px;
   color: var(--muted);
 }
 
-.section-head code {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-}
-
-.count {
-  padding: 0 6px;
-  border-radius: 8px;
-  background: var(--surface-3);
-  color: var(--muted);
-}
-
-.doc-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.doc-list button {
-  display: grid;
-  gap: 3px;
-  width: 100%;
-  padding: 7px 14px;
-  border: 0;
-  border-bottom: 1px solid var(--surface-3);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-  font: inherit;
-}
-
-.doc-list button:hover {
-  background: var(--surface-2);
-}
-
-.doc-list button.active {
-  background: var(--accent-soft);
-}
-
-.title {
-  font-size: 13px;
+.section-label {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   color: var(--text);
-}
-
-.draft {
-  margin-left: 6px;
-  padding: 0 5px;
-  border-radius: 7px;
-  background: var(--warning-soft);
-  color: var(--warning);
-  font-size: 10.5px;
-}
-
-.badges {
-  display: flex;
-  gap: 6px;
-}
-
-.badge {
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: var(--surface-3);
-  color: var(--muted);
-  font-size: 11px;
-}
-
-.badge.kind {
-  background: var(--info-soft);
-  color: var(--info);
-}
-
-.badge.type {
-  background: var(--accent-soft);
-  color: var(--accent-strong);
 }
 
 .section-kind {
   color: var(--faint);
-  font-size: 10.5px;
+  font-size: var(--text-2xs);
 }
 
-.when {
-  color: var(--border-strong);
+.docs .doc-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--panel-pad-x);
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
 }
 
-.badge.tr {
-  background: var(--success-soft);
-  color: var(--success);
+.docs .doc-row:hover {
+  background: var(--surface-2);
 }
 
-.path {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.docs .doc-row.selected {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.empty {
-  padding: 12px 14px;
-  font-size: 12px;
-  color: var(--faint);
+.row-titles {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.badges {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+@media (max-width: 1200px) {
+  .badges {
+    display: none;
+  }
 }
 </style>

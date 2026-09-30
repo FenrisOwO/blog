@@ -81,7 +81,7 @@ function bytes(value) {
       </button>
     </div>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="error" class="error-line">{{ error }}</p>
 
     <div v-if="plan" class="plan">
       <div class="facts">
@@ -93,7 +93,7 @@ function bytes(value) {
         <div><span>合计</span><code>{{ plan.totalFiles }} 个文件 · {{ bytes(plan.totalBytes) }}</code></div>
       </div>
 
-      <p v-for="warning in plan.warnings" :key="warning" class="warn">⚠ {{ warning }}</p>
+      <p v-for="warning in plan.warnings" :key="warning" class="warn-line">⚠ {{ warning }}</p>
 
       <details>
         <summary>将移动的文件（{{ plan.files.length }}）</summary>
@@ -137,41 +137,30 @@ function bytes(value) {
 </template>
 
 <style scoped>
+/* The delete dialog: the scopes, the plan facts and the typed confirmation. */
+
 .target {
-  margin: 0 0 10px;
-  font-size: 12px;
+  margin: 0 0 var(--space-md);
+  font-size: var(--text-sm);
 }
 
 .target code,
 .facts code,
 .files code {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
-}
-
-.kind {
-  margin-left: 8px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: var(--info-soft);
-  color: var(--info);
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 
 .scopes {
   display: flex;
-  gap: 8px;
+  gap: var(--space-md);
 }
 
 .facts {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-  margin-top: 12px;
-}
-
-.files.kept code {
-  color: var(--success);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-sm);
+  margin-top: var(--space-lg);
 }
 
 .facts div {
@@ -183,73 +172,31 @@ function bytes(value) {
   color: var(--muted);
 }
 
-.plan {
-  margin-top: 10px;
-}
-
-.warn {
-  margin: 8px 0 0;
-  color: var(--warning);
+.files.kept code {
+  color: var(--success);
 }
 
 .files {
-  margin: 6px 0 0;
-  padding-left: 18px;
+  margin: var(--space-sm) 0 0;
+  padding-left: var(--space-xl);
   max-height: 160px;
   overflow: auto;
 }
 
 .recoverable {
-  margin: 10px 0 0;
+  margin: var(--space-md) 0 0;
   color: var(--success);
 }
 
 .confirm {
   display: grid;
-  gap: 3px;
-  margin-top: 10px;
-  font-size: 12px;
+  gap: var(--space-xs);
+  margin-top: var(--space-md);
   color: var(--error);
+  font-size: var(--text-sm);
 }
 
 .confirm input {
   width: 160px;
-  padding: 5px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  font: inherit;
-  font-size: 12px;
-}
-
-.error {
-  margin: 8px 0 0;
-  color: var(--error);
-}
-
-.btn {
-  padding: 5px 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--surface);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.btn.danger {
-  border-color: var(--error);
-  background: var(--error);
-  color: var(--on-accent);
-}
-
-.hint {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--faint);
 }
 </style>

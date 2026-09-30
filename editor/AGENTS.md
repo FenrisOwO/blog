@@ -14,7 +14,7 @@ named change set, one confirmation, then a transaction with read-back verificati
 ## Commands
 
 ```bash
-node --test          # full suite (400 tests)  — npm test
+node --test          # full suite (415 tests)  — npm test
 node scripts/acceptance.mjs   # real-site gate (T1..T18) — npm run accept
 npm run build:web    # rebuild web/ -> dist/ (Vite + Vue 3)
 node server/index.js # run the editor on http://127.0.0.1:1313/editor/
@@ -346,6 +346,74 @@ rewritten at all.
   element indices: after clicking something, confirm through `browser_get_state` (the element
   labels there are live) or through the HTTP API, never through the extracted page text. A "panel
   stuck on loading" was really a cached read of the pre-mount render.
-* `public/` and `.backups/` are build/backup output; the git panel lists them because this
-  repository has never been committed (everything shows as untracked). That is why the change list
-  is filterable by path instead of truncated.
+* `public/` and `.backups/` are build/backup output. The repository now has an initial commit
+  (branch `phase-8-modern-editor`, baseline of the whole project) and a root `.gitignore`, so the
+  git panel shows a real history and a short change list; before that commit everything showed as
+  untracked, which is why the change list is filterable by path instead of truncated.
+
+## Insert B note (the article selector must stay mounted)
+
+* The Phase 8 shell rewrite rebuilt the content view as rail + workspace + inspector and, in doing
+  so, dropped the **mount point** for the article selector: `DocumentList.vue` stayed imported,
+  the `visibleDocuments` computed that the topbar search feeds stayed defined, and the search kept
+  filtering - but nothing rendered the list. No CSS was hiding it; the pane simply was not in the
+  template. A document could then only be reached through the Ctrl+K palette, which is not the
+  flow the view is built around.
+* The selector lives in `App.vue` as `<aside class="browser">`, the second column of the content
+  view (`.shell.with-browser`, width token `--browser-w`), and it renders `DocumentList` with
+  `:documents="visibleDocuments"` and `@select="openDocument"`. It is **open by default**
+  (`listOpen = ref(true)`) and can only be collapsed by the user - via the workspace head button,
+  the status bar item or `toggle-list` in the palette - because a collapse-by-default list is a
+  missing feature, not a tidy layout.
+* Two traps are now tests, in `test/editorShellMount.test.js`:
+  * **Orphans.** Every `.vue` import in `App.vue` must appear as a tag in the template, and every
+    `const x = computed(...)` must be referenced somewhere other than its declaration. This is the
+    guard that would have caught the original regression (it reports `DocumentList` and
+    `visibleDocuments` on the pre-fix file).
+  * **Hiding by CSS.** No rule whose selector is `.browser` may set `display: none`,
+    `visibility: hidden`, `opacity: 0`, a zero width/height or `clip-path`, and every
+    `--browser-w` at every breakpoint must stay positive. Narrow windows therefore *narrow* the
+    list rather than hiding it, unlike the inspector (which is deliberately hidden below 1200px).
+  * The same file also walks the flow against the real tree: `/api/documents` -> pick an article
+    -> `/api/documents/raw` -> the text equals the file byte for byte, with the hash and mtime
+    unchanged after every one of the 50 documents has been opened.
+* Reading `.vue` sources in a test means slicing by markers, and `indexOf(end)` searches from 0 by
+  default: the shell has nested `</header>` and `</aside>` tags, so the end marker has to be
+  searched *after* the start marker. Getting that wrong makes a structural test assert against the
+  wrong block and pass for the wrong reason.
+
+## Phase 8 note (one shell, one stylesheet)
+
+* The look of the application is owned by two files and by nothing else: `web/styles/tokens.css`
+  (every colour, size and gap, light and dark) and `web/styles/base.css` (the shell, the page and
+  pane structure, and the shared primitives - `.btn`, `.badge`, `.chip`, `.list-item`, `.panel`,
+  `.view`, `.icon`, `.error-line`, ...). A component keeps only its own layout in its scoped block,
+  so redefining `.btn` in a view is how "the button in the dialog is 2px shorter" starts.
+  `test/designSystem.test.js` holds that line: a component may not redefine a primitive, and no
+  component style may name a colour of its own.
+* Two structures carry the whole UI, and every view uses one of them:
+  * a **page** is `.view` > `.view-head` + `.view-body` (AssetPanel, RelationsPanel,
+    SettingsPanel), sharing `--page-pad` with the rest of the shell;
+  * a **pane** is a head plus a body at one height (`.panel`, `.browser`), which is what makes the
+    selector's header, the workspace header, the inspector cards and the preview header line up.
+  Misalignment was almost never a padding tweak: it was two controls of different heights, a glyph
+  with different metrics from an SVG, or a view that had invented its own header. So the primitives
+  are the fix - one `--control-h`, and `.icon` as a fixed centred box for both emoji and SVG, with
+  every decorative glyph carrying `aria-hidden="true"` and its meaning in the label beside it.
+* The rail is built from the `VIEWS` list, and each command in `commands.js` carries the same glyph
+  as the rail entry it mirrors, so the palette and the rail cannot disagree about what a view is.
+* UI work is verified in a browser, not only by tests. `node server/index.js` wants port 1313, but a
+  second instance can run on any free port without disturbing the first: build first
+  (`npm run build:web`), then start one with `watchSources: false` and `autoBuildOnSave: false` (so
+  it never writes to the site) - see the launcher snippet in this file's history - and open
+  `http://127.0.0.1:<port>/editor/`. Read dimensions from the rendered page, never from a scoped
+  stylesheet.
+* The site belongs to a person who may be editing it *while* acceptance runs, in the editor window
+  that is usually already open. Two consequences, both now built into `scripts/acceptance.mjs`:
+  * expected values are **derived from the site** rather than pinned: the footer year comes from
+    `params.footer.since` and the theme's own rule (`<since> - <year>` only when the two differ),
+    the document kinds from the directory layout, the tag vocabulary from the documents' front
+    matter - so adding an article never reads as a regression;
+  * the whole-tree "the site came back byte for byte" checks **attribute** every difference: paths
+    this run named must be restored, and anything else that moved is reported as an outside write
+    (`⚠️`) instead of failing the run.

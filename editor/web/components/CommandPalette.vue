@@ -77,6 +77,7 @@ function onKeydown(event) {
       <input
         ref="input"
         v-model="query"
+        class="palette-input"
         type="text"
         role="combobox"
         aria-expanded="true"
@@ -100,6 +101,7 @@ function onKeydown(event) {
             @mousemove="index = flat.indexOf(command)"
             @click="run(command)"
           >
+            <span class="icon sm" aria-hidden="true">{{ command.icon }}</span>
             <span class="label">{{ command.label }}</span>
             <span v-if="command.hint" class="where">{{ command.hint }}</span>
             <kbd v-else-if="command.shortcut">{{ command.shortcut }}</kbd>
@@ -122,6 +124,6 @@ function onKeydown(event) {
 
 <style scoped>
 .palette .state {
-  padding: var(--space-6) var(--space-4);
+  padding: var(--space-2xl) var(--space-lg);
 }
 </style>

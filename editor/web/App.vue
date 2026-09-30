@@ -48,8 +48,29 @@ const meta = ref(null);
 
 const mode = ref('raw'); // 'form' | 'raw'
 const view = ref('content'); // 'content' | 'assets' | 'relations' | 'settings' | 'git'
+
+// The rail is data, not five near-identical buttons: one shape per entry, one
+// place that decides what a navigation item looks like. Icons are emoji inside
+// `.icon` boxes (see base.css) so they cannot drift from their label.
+const VIEWS = [
+  { id: 'content', icon: '📄', label: '内容' },
+  { id: 'assets', icon: '🖼', label: '资源' },
+  { id: 'relations', icon: '🔗', label: '关系' },
+  { id: 'settings', icon: '⚙️', label: '站点设置' },
+  { id: 'git', icon: '🌿', label: 'Git' },
+];
+
+function navCount(id) {
+  if (id === 'content') return loadingDocuments.value ? '…' : String(documents.value.length);
+  const total = gitStatus.value?.counts?.total;
+  if (id === 'git') return total ? String(total) : '';
+  return '';
+}
 const previewMode = ref('split'); // 'editor' | 'split' | 'preview'
 const inspectorOpen = ref(true);
+// The article selector. It is a region of the content view, open by default: the list is how a
+// document is chosen, so a collapsed-by-default list is a missing feature, not a tidy layout.
+const listOpen = ref(true);
 const searchQuery = ref('');
 const paletteOpen = ref(false);
 
@@ -650,6 +671,7 @@ const commands = computed(() =>
       theme: themeResolved.value,
       themePreference: themePreference.value,
       inspectorOpen: inspectorOpen.value,
+      listOpen: listOpen.value,
       gitChanges: gitStatus.value?.counts?.total ?? 0,
       gitRepository: Boolean(gitStatus.value?.repository),
     },
@@ -678,8 +700,14 @@ const actions = {
   toggleInspector: () => {
     inspectorOpen.value = !inspectorOpen.value;
   },
+  toggleList: () => {
+    listOpen.value = !listOpen.value;
+  },
+  // Searching filters the list, so a search that arrives while the list is closed has to reopen
+  // it - otherwise the match count changes somewhere the user cannot see.
   focusSearch: () => {
     view.value = 'content';
+    listOpen.value = true;
     document.querySelector('.topbar-search input')?.focus();
   },
   commit: () => {
@@ -745,32 +773,41 @@ onUnmounted(() => {
 <template>
   <div class="app">
     <header class="topbar">
-      <span class="brand"><span class="dot"></span>Hugo Visual Editor</span>
+      <span class="brand"><span class="dot" aria-hidden="true"></span>Hugo Visual Editor</span>
       <span class="badge">Phase 8</span>
 
       <label v-if="view === 'content'" class="search topbar-search">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
-          <circle cx="7" cy="7" r="4.5" />
-          <path d="M10.5 10.5L14 14" stroke-linecap="round" />
-        </svg>
+        <span class="icon sm" aria-hidden="true">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="7" cy="7" r="4.5" />
+            <path d="M10.5 10.5L14 14" stroke-linecap="round" />
+          </svg>
+        </span>
         <input v-model="searchQuery" type="search" placeholder="筛选文档（路径 / 标题 / 类型）" aria-label="筛选文档" />
         <kbd>/</kbd>
       </label>
-      <span v-else class="hint">{{ { assets: '资源', relations: '关系', settings: '站点设置', git: 'Git 变更' }[view] }}</span>
 
       <span class="spacer"></span>
 
-      <button type="button" class="btn sm" :disabled="busy" @click="triggerBuild" title="构建站点（hugo）">
-        <span v-if="['running', 'queued'].includes(buildStatus?.state)" class="spinner"></span>
+      <button type="button" class="btn mini" :disabled="busy" title="构建站点（hugo）" @click="triggerBuild">
+        <span v-if="['running', 'queued'].includes(buildStatus?.state)" class="spinner" aria-hidden="true"></span>
+        <span class="icon sm" aria-hidden="true">🏗</span>
         <span>构建</span>
         <span v-if="generation" class="badge">#{{ generation }}</span>
       </button>
 
-      <button type="button" class="icon-btn" :aria-label="`切换到${themeResolved === 'dark' ? '浅色' : '深色'}主题`" title="主题" @click="theme.toggle()">
-        <span>{{ themeResolved === 'dark' ? '🌙' : '☀️' }}</span>
+      <button
+        type="button"
+        class="icon-btn"
+        :aria-label="`切换到${themeResolved === 'dark' ? '浅色' : '深色'}主题`"
+        :title="`主题：${themeResolved === 'dark' ? '深色' : '浅色'}`"
+        @click="theme.toggle()"
+      >
+        <span class="icon" aria-hidden="true">{{ themeResolved === 'dark' ? '🌙' : '☀️' }}</span>
       </button>
 
-      <button type="button" class="btn sm" title="命令面板 (Ctrl+K)" @click="paletteOpen = true">
+      <button type="button" class="btn mini" title="命令面板 (Ctrl+K)" @click="paletteOpen = true">
+        <span class="icon sm" aria-hidden="true">⌘</span>
         <span>命令</span>
         <kbd>Ctrl</kbd><kbd>K</kbd>
       </button>
@@ -779,35 +816,81 @@ onUnmounted(() => {
     <p v-if="fatal" class="warn-line fatal">界面错误（未捕获）：{{ fatal }}</p>
     <p v-if="buildError" class="warn-line fatal">构建接口错误：{{ buildError }}</p>
 
-    <div class="shell" :class="{ 'with-inspector': view === 'content' && inspectorOpen }">
+    <div
+      class="shell"
+      :class="{
+        'with-browser': view === 'content' && listOpen,
+        'with-inspector': view === 'content' && inspectorOpen,
+      }"
+    >
       <nav class="rail" aria-label="主导航">
-        <button type="button" class="rail-item" :class="{ active: view === 'content' }" @click="view = 'content'">
-          <span>📄</span><span class="label">内容</span><span class="count">{{ loadingDocuments ? '…' : documents.length }}</span>
-        </button>
-        <button type="button" class="rail-item" :class="{ active: view === 'assets' }" @click="view = 'assets'">
-          <span>🖼</span><span class="label">资源</span>
-        </button>
-        <button type="button" class="rail-item" :class="{ active: view === 'relations' }" @click="view = 'relations'">
-          <span>🔗</span><span class="label">关系</span>
-        </button>
-        <button type="button" class="rail-item" :class="{ active: view === 'settings' }" @click="view = 'settings'">
-          <span>⚙️</span><span class="label">站点设置</span>
-        </button>
-        <button type="button" class="rail-item" :class="{ active: view === 'git' }" @click="view = 'git'">
-          <span>🌿</span><span class="label">Git</span>
-          <span class="count">{{ gitStatus?.counts?.total ?? '' }}</span>
+        <button
+          v-for="item in VIEWS"
+          :key="item.id"
+          type="button"
+          class="nav-item"
+          :aria-current="view === item.id ? 'page' : undefined"
+          @click="view = item.id"
+        >
+          <span class="icon" aria-hidden="true">{{ item.icon }}</span>
+          <span class="label">{{ item.label }}</span>
+          <span v-if="navCount(item.id)" class="count">{{ navCount(item.id) }}</span>
         </button>
 
-        <div class="rail-section">工具</div>
-        <button type="button" class="rail-item" :disabled="busy" @click="openCreate"><span>➕</span><span class="label">新建文档</span></button>
-        <button type="button" class="rail-item" :disabled="busy" @click="openTrash"><span>🗑</span><span class="label">回收站</span></button>
-        <button type="button" class="rail-item" @click="paletteOpen = true"><span>⌘</span><span class="label">命令面板</span><span class="count">Ctrl K</span></button>
+        <div class="nav-section">工具</div>
+        <button type="button" class="nav-item" :disabled="busy" @click="openCreate">
+          <span class="icon" aria-hidden="true">➕</span><span class="label">新建文档</span>
+        </button>
+        <button type="button" class="nav-item" :disabled="busy" @click="openTrash">
+          <span class="icon" aria-hidden="true">🗑</span><span class="label">回收站</span>
+        </button>
+        <button type="button" class="nav-item" @click="paletteOpen = true">
+          <span class="icon" aria-hidden="true">⌘</span><span class="label">命令面板</span>
+          <span class="shortcut">Ctrl K</span>
+        </button>
       </nav>
 
       <!-- ============================ content ============================ -->
       <template v-if="view === 'content'">
+        <!-- The article selector: the list this view is built around. It is mounted here, next
+             to the workspace it feeds, and it is what the topbar search filters. -->
+        <aside v-if="listOpen" class="browser" aria-label="文章选择">
+          <header class="browser-head">
+            <span class="icon sm" aria-hidden="true">📄</span>
+            <span class="title">文章</span>
+            <span class="badge" :title="`筛选后 ${visibleDocuments.length} 篇，共 ${documents.length} 篇`">
+              {{ loadingDocuments ? '…' : `${visibleDocuments.length}/${documents.length}` }}
+            </span>
+            <span v-if="searchQuery.trim()" class="badge accent">筛选中</span>
+            <span class="spacer"></span>
+            <button type="button" class="icon-btn mini" title="收起文章列表" aria-label="收起文章列表" @click="listOpen = false">
+              <span class="icon sm" aria-hidden="true">⟨</span>
+            </button>
+          </header>
+          <div class="browser-body">
+            <DocumentList
+              :documents="visibleDocuments"
+              :sections="sections"
+              :groups="groups"
+              :selected-path="selectedPath"
+              :loading="loadingDocuments"
+              @select="openDocument"
+            />
+          </div>
+        </aside>
+
         <section class="workspace content-view">
           <header class="workspace-head">
+            <button
+              type="button"
+              class="btn mini"
+              :aria-pressed="listOpen"
+              :title="listOpen ? '收起文章列表' : '展开文章列表'"
+              @click="listOpen = !listOpen"
+            >
+              <span class="icon sm" aria-hidden="true">📄</span>
+              <span>文章列表</span>
+            </button>
             <code class="path">{{ selectedPath ?? '（未选择文档）' }}</code>
             <span v-if="meta" class="badge">{{ contentKindLabel(meta.contentKind) }} · {{ formLabel(meta.kind) }} · {{ meta.section || '(根)' }} · {{ meta.language }}</span>
             <span v-if="dirty" class="badge warn">未保存</span>
@@ -818,12 +901,15 @@ onUnmounted(() => {
               <button type="button" :aria-pressed="previewMode === 'split'" title="编辑 + 预览" @click="previewMode = 'split'">分栏</button>
               <button type="button" :aria-pressed="previewMode === 'preview'" title="只显示预览" @click="previewMode = 'preview'">预览</button>
             </div>
-            <button type="button" class="btn sm danger" :disabled="busy || !selectedPath" @click="openDelete">删除</button>
+            <button type="button" class="btn mini danger" :disabled="busy || !selectedPath" @click="openDelete">
+              <span class="icon sm" aria-hidden="true">🗑</span>
+              <span>删除</span>
+            </button>
           </header>
 
           <div class="tabs">
-            <button type="button" class="tab" :class="{ active: mode === 'raw' }" @click="mode = 'raw'">原文</button>
-            <button type="button" class="tab" :class="{ active: mode === 'form' }" @click="mode = 'form'">表单</button>
+            <button type="button" class="tab" :aria-current="mode === 'raw' ? 'page' : undefined" @click="mode = 'raw'">原文</button>
+            <button type="button" class="tab" :aria-current="mode === 'form' ? 'page' : undefined" @click="mode = 'form'">表单</button>
             <span v-if="mode === 'form' && formChanges > 0" class="badge warn">{{ formChanges }} 处待提交</span>
             <span class="spacer"></span>
             <span class="hint">表单与原文都只提交「预览 → 确认」两步</span>
@@ -863,14 +949,14 @@ onUnmounted(() => {
                 />
                 <div v-if="preview || saveResult" class="panel docs">
                   <div v-if="preview" class="panel-head">
-                    <b>变更预览</b>
+                    <span class="panel-title">变更预览</span>
                     <span class="badge">status: {{ preview.status }}</span>
                     <span class="badge">+{{ preview.diff.added }} / -{{ preview.diff.removed }}</span>
                     <span class="badge">正文变更: {{ preview.frontMatter.bodyChanged ? '是' : '否' }}</span>
                   </div>
                   <pre v-if="preview" class="diff"><code v-for="(line, index) in String(preview.diffText).split('\n')" :key="index" class="diff-line">{{ line }}</code></pre>
                   <div v-if="saveResult" class="panel-head">
-                    <b>保存结果</b>
+                    <span class="panel-title">保存结果</span>
                     <span class="badge">备份 {{ saveResult.backupPath ?? '无' }}</span>
                     <span class="badge" :class="readback && !readback.matches ? 'err' : 'ok'">
                       {{ readback && readback.matches ? '编辑器内容 == 磁盘内容' : '编辑器内容 != 磁盘内容' }}
@@ -882,7 +968,7 @@ onUnmounted(() => {
               <div v-else class="form-scroll">
                 <div v-if="formPreview" class="panel">
                   <div class="panel-head">
-                    <b>表单变更预览</b>
+                    <span class="panel-title">表单变更预览</span>
                     <span class="badge">status: {{ formPreview.status }}</span>
                     <span class="badge">+{{ formPreview.diff.added }} / -{{ formPreview.diff.removed }}</span>
                     <span class="badge">正文未改动: {{ formPreview.bodyUnchanged ? '是' : '否' }}</span>
@@ -896,7 +982,7 @@ onUnmounted(() => {
                 </div>
                 <div v-if="formResult" class="panel">
                   <div class="panel-head">
-                    <b>表单保存结果</b>
+                    <span class="panel-title">表单保存结果</span>
                     <span class="badge">status: {{ formResult.status }}</span>
                     <span v-if="formResult.saved" class="badge">sha {{ formResult.saved.shaBefore.slice(0, 12) }} → {{ formResult.saved.shaAfter.slice(0, 12) }}</span>
                   </div>
@@ -932,8 +1018,8 @@ onUnmounted(() => {
             <div class="fact"><span>代次</span><span>#{{ generation }}</span></div>
             <label class="fact check"><input type="checkbox" :checked="autoBuildOnSave" @change="setAutoBuild($event.target.checked)" /><span>保存后自动构建</span></label>
             <div class="row">
-              <button type="button" class="btn sm" @click="triggerBuild">立即构建</button>
-              <button type="button" class="btn sm ghost" @click="showLog = !showLog">{{ showLog ? '隐藏日志' : '显示日志' }}</button>
+              <button type="button" class="btn mini" @click="triggerBuild">立即构建</button>
+              <button type="button" class="btn mini ghost" @click="showLog = !showLog">{{ showLog ? '隐藏日志' : '显示日志' }}</button>
             </div>
             <pre v-if="showLog" class="log"><code>{{ (buildStatus?.lastBuild?.message ?? '（还没有构建日志）') }}</code></pre>
           </div>
@@ -944,20 +1030,23 @@ onUnmounted(() => {
             <div class="fact"><span>分支</span><span>{{ gitStatus?.branch ?? '—' }}</span></div>
             <div class="fact"><span>本文档</span><span>{{ gitForDocument ? gitForDocument.kind : '无改动（或未跟踪目录）' }}</span></div>
             <p class="hint">编辑器只会读取 git；提交需要显式勾选文件并确认。</p>
-            <button type="button" class="btn sm" @click="view = 'git'">打开 Git 面板</button>
+            <button type="button" class="btn mini" @click="view = 'git'">打开 Git 面板</button>
           </div>
         </aside>
       </template>
 
       <!-- ============================ other views ============================ -->
-      <div v-else-if="view === 'assets'" class="view-slot"><AssetPanel @changed="onAssetsChanged" /></div>
-      <div v-else-if="view === 'relations'" class="view-slot">
-        <RelationsPanel :documents="documents" @changed="onRelationsChanged" />
-      </div>
-      <div v-else-if="view === 'git'" class="view-slot no-pad">
-        <GitPanel :reload-key="gitReloadKey" :notify="(kind, title, options) => toasts.push(kind, title, options)" @changed="onGitChanged" />
-      </div>
-      <div v-else class="view-slot"><SettingsPanel @saved="onSettingsSaved" /></div>
+      <!-- Every view owns its own page structure (.view / .view-head / .view-body),
+           so the shell only decides which pane occupies the workspace column. -->
+      <AssetPanel v-else-if="view === 'assets'" @changed="onAssetsChanged" />
+      <RelationsPanel v-else-if="view === 'relations'" :documents="documents" @changed="onRelationsChanged" />
+      <GitPanel
+        v-else-if="view === 'git'"
+        :reload-key="gitReloadKey"
+        :notify="(kind, title, options) => toasts.push(kind, title, options)"
+        @changed="onGitChanged"
+      />
+      <SettingsPanel v-else @saved="onSettingsSaved" />
     </div>
 
     <StatusBar
@@ -969,12 +1058,15 @@ onUnmounted(() => {
       :theme-preference="themePreference"
       :core="coreInfo?.name ?? ''"
       :auto-build-on-save="autoBuildOnSave"
+      :list-open="listOpen"
+      :inspector-open="inspectorOpen"
       @save="saveCurrent"
       @build="triggerBuild"
       @open-preview="actions.openPreview"
       @theme="(preference) => theme.set(preference)"
       @git="view = 'git'"
       @toggle-inspector="inspectorOpen = !inspectorOpen"
+      @toggle-list="listOpen = !listOpen"
     />
 
     <CommandPalette :open="paletteOpen" :commands="commands" @close="paletteOpen = false" />
@@ -1029,6 +1121,10 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* The shell owns the content view's own layout; the shared look of a header, a
+   panel, a tab and a control lives in base.css so the other four views can use
+   the same ones. */
+
 .content-view {
   min-height: 0;
 }
@@ -1042,19 +1138,6 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.view-slot {
-  min-width: 0;
-  min-height: 0;
-  overflow: auto;
-  padding: var(--space-4);
-}
-
-.view-slot.no-pad {
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 .content-view .split {
   flex: 1 1 auto;
   min-height: 0;
@@ -1064,6 +1147,8 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+/* The diff/readback card sits at the bottom of the editor pane, flush with its
+   edges: it is part of the pane, not a card floating inside it. */
 .docs {
   margin: 0;
   border-radius: 0;
@@ -1078,47 +1163,14 @@ onUnmounted(() => {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-4);
-}
-
-.form-scroll .panel {
-  margin: 0 0 var(--space-4);
-}
-
-.fact {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr);
-  gap: var(--space-2);
-  padding: 2px 0;
-  font-size: var(--text-sm);
-}
-
-.fact > span:first-child {
-  color: var(--muted);
-}
-
-.fact > span:last-child {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  overflow-wrap: anywhere;
-}
-
-.fact.check {
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: center;
-}
-
-.row {
-  display: flex;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
+  padding: var(--panel-pad-x);
 }
 
 .log {
-  margin: var(--space-2) 0 0;
+  margin: var(--space-sm) 0 0;
   max-height: 220px;
   overflow: auto;
-  padding: var(--space-3);
+  padding: var(--space-md);
   border-radius: var(--radius-sm);
   background: var(--surface-3);
   font-family: var(--font-mono);
@@ -1128,10 +1180,6 @@ onUnmounted(() => {
 
 .diff {
   max-height: 260px;
-}
-
-.diff-line {
-  display: block;
 }
 
 .fatal {

@@ -163,36 +163,54 @@ async function openRaw(file) {
 </script>
 
 <template>
-  <div class="settings">
-    <p v-if="error" class="error">设置错误：{{ error }}</p>
-    <p v-if="loading" class="muted">正在读取 config/_default …</p>
+  <div class="view settings">
+    <header class="view-head">
+      <h2 class="view-title">
+        <span class="icon lg" aria-hidden="true">⚙️</span>
+        <span>站点设置</span>
+        <span v-if="settings" class="badge">{{ settings.configRoot }}</span>
+      </h2>
+      <p class="view-sub">
+        设置是文件里的键：这里显示每个键的值、它来自哪个文件，以及它是不是本站覆盖值。
+        主题默认配置只读，保存会在本站配置里写入覆盖值。
+      </p>
+    </header>
 
-    <div v-if="settings && !loading" class="settings-body">
+    <p v-if="error" class="error-line">设置错误：{{ error }}</p>
+    <div v-if="loading" class="state">
+      <span class="spinner" aria-hidden="true"></span>
+      <strong>正在读取 config/_default …</strong>
+    </div>
+
+    <div v-if="settings && !loading" class="view-body flush settings-body">
       <aside class="settings-nav">
         <div class="nav-head">
-          <span>站点设置</span>
-          <span class="muted small">{{ settings.configRoot }}</span>
+          <span class="panel-title">设置分组</span>
         </div>
         <button
           v-for="item in groups"
           :key="item.id"
           type="button"
-          class="nav-item"
-          :class="{ active: item.id === groupId }"
+          class="list-item selectable nav-item"
+          :class="{ selected: item.id === groupId }"
+          :aria-current="item.id === groupId ? 'true' : undefined"
           @click="groupId = item.id"
         >
-          <b>{{ item.label }}</b>
-          <span class="file">{{ item.file }}</span>
+          <span class="body">
+            <span class="title">{{ item.label }}</span>
+            <span class="meta">{{ item.file }}</span>
+          </span>
         </button>
 
         <div class="files">
           <div class="files-head">配置文件</div>
-          <div v-for="file in settings.files" :key="file.file" class="file-row">
-            <code>{{ file.file }}</code>
-            <span class="muted small">{{ file.bytes }} B · {{ file.lines }} 行</span>
+          <div v-for="file in settings.files" :key="file.file" class="list-item file-row">
+            <span class="mono">{{ file.file }}</span>
+            <span class="count">{{ file.bytes }} B · {{ file.lines }} 行</span>
+            <span class="spacer"></span>
             <button type="button" class="mini" @click="openRaw(file.file)">原文</button>
           </div>
-          <p class="muted small">
+          <p class="hint">
             主题 <b>{{ settings.theme.name ?? '（未声明）' }}</b> 的默认配置只读，保存会在本站配置里写入覆盖值。
           </p>
         </div>
@@ -201,16 +219,16 @@ async function openRaw(file) {
       <main class="settings-main">
         <header class="group-head">
           <b>{{ group.label }}</b>
-          <span class="muted small">{{ group.description }}</span>
+          <span class="hint">{{ group.description }}</span>
         </header>
 
-        <div v-for="row in rows" :key="row.id" class="row" :class="{ edited: rowEdited(row) || edits.set[row.id] !== undefined }">
-          <div class="row-head">
+        <div v-for="row in rows" :key="row.id" class="setting" :class="{ edited: rowEdited(row) || edits.set[row.id] !== undefined }">
+          <div class="setting-head">
             <label :for="`f-${row.id}`">{{ row.label }}</label>
-            <span class="badge" :class="row.source ?? 'site'">{{ sourceLabel(row.source) }}</span>
+            <span class="badge" :class="row.source === 'theme' ? 'info' : ''">{{ sourceLabel(row.source) }}</span>
             <span v-if="!row.editable" class="badge warn">{{ row.readOnlyReason }}</span>
             <span class="spacer"></span>
-            <span class="muted small mono">{{ row.file }}<template v-if="row.path"> · {{ row.path }}</template></span>
+            <span class="count mono">{{ row.file }}<template v-if="row.path"> · {{ row.path }}</template></span>
           </div>
 
           <!-- a single value: text / number / select / boolean -->
@@ -218,7 +236,7 @@ async function openRaw(file) {
             <div class="control">
               <template v-if="row.type === 'boolean'">
                 <input :id="`f-${row.id}`" v-model="state.drafts[row.id]" type="checkbox" :disabled="!row.editable" />
-                <span class="muted small">{{ state.drafts[row.id] ? '启用' : '关闭' }}</span>
+                <span class="hint">{{ state.drafts[row.id] ? '启用' : '关闭' }}</span>
               </template>
               <template v-else-if="row.type === 'select'">
                 <select :id="`f-${row.id}`" v-model="state.drafts[row.id]" :disabled="!row.editable">
@@ -239,8 +257,8 @@ async function openRaw(file) {
               </template>
             </div>
 
-            <p v-if="row.help" class="muted small">{{ row.help }}</p>
-            <p v-for="warning in row.warnings" :key="warning" class="warn small">{{ warning }}</p>
+            <p v-if="row.help" class="hint">{{ row.help }}</p>
+            <p v-for="warning in row.warnings" :key="warning" class="warn-line">{{ warning }}</p>
 
             <div v-if="row.perLanguage" class="overrides">
               <button type="button" class="link" @click="openOverrides[row.id] = !openOverrides[row.id]">
@@ -255,9 +273,9 @@ async function openRaw(file) {
                     type="text"
                     :placeholder="`继承：${valueText(language.effective)}`"
                   />
-                  <span class="muted small">{{ language.present ? '本站覆盖' : '无覆盖' }}</span>
+                  <span class="hint">{{ language.present ? '本站覆盖' : '无覆盖' }}</span>
                 </div>
-                <p class="muted small">留空表示该语言继续使用上层值；覆盖只能修改，删除覆盖不在本阶段范围内。</p>
+                <p class="hint">留空表示该语言继续使用上层值；覆盖只能修改，删除覆盖不在本阶段范围内。</p>
               </div>
             </div>
           </template>
@@ -282,7 +300,7 @@ async function openRaw(file) {
                     @change="updateWidgets(row, setWidgetLimit(widgetList(row), index, $event.target.value))"
                   />
                 </label>
-                <span v-if="widget.params && Object.keys(widget.params).length > (widget.params.limit === undefined ? 0 : 1)" class="muted small">
+                <span v-if="widget.params && Object.keys(widget.params).length > (widget.params.limit === undefined ? 0 : 1)" class="hint">
                   其他参数：{{ Object.keys(widget.params).filter((key) => key !== 'limit').join(', ') }}（保留）
                 </span>
                 <span class="spacer"></span>
@@ -307,7 +325,7 @@ async function openRaw(file) {
             <div v-for="entry in row.entries" :key="entry.index" class="menu-entry" :class="{ removing: markedForRemoval(entry.index) }">
               <div class="menu-head">
                 <b>{{ entry.name ?? entry.identifier ?? `第 ${entry.index + 1} 条` }}</b>
-                <span v-if="entry.icon && !entry.iconKnown" class="warn small">图标 “{{ entry.icon }}” 不在主题中，构建会失败</span>
+                <span v-if="entry.icon && !entry.iconKnown" class="warn-line">图标 “{{ entry.icon }}” 不在主题中，构建会失败</span>
                 <span class="spacer"></span>
                 <button type="button" class="mini" @click="toggleRemoval(entry.index)">
                   {{ markedForRemoval(entry.index) ? '取消删除' : '删除' }}
@@ -375,7 +393,7 @@ async function openRaw(file) {
                       :type="field.type === 'number' ? 'number' : 'text'"
                     />
                   </td>
-                  <td class="muted small">{{ entry.code }} 的标题覆盖在“常规 · 站点标题”里设置</td>
+                  <td class="hint">{{ entry.code }} 的标题覆盖在“常规 · 站点标题”里设置</td>
                 </tr>
               </tbody>
             </table>
@@ -385,7 +403,7 @@ async function openRaw(file) {
         <section v-if="unmanaged.length > 0" class="unmanaged">
           <div class="group-head">
             <b>只读键</b>
-            <span class="muted small">
+            <span class="hint">
               这些键来自第 1-4 阶段（主题、permalinks、cookie 分类等），设置界面只读取它们，保存时会原样保留。
             </span>
           </div>
@@ -394,7 +412,7 @@ async function openRaw(file) {
             <ul>
               <li v-for="leaf in file.leaves" :key="leaf.path">
                 <span class="mono">{{ leaf.path }}</span>
-                <span class="muted small">{{ valueText(leaf.value) }}</span>
+                <span class="hint">{{ valueText(leaf.value) }}</span>
               </li>
             </ul>
           </div>
@@ -405,8 +423,8 @@ async function openRaw(file) {
     <footer v-if="settings && !loading" class="settings-foot">
       <span :class="pending > 0 ? 'dirty' : 'muted'">{{ pending > 0 ? `待保存 ${pending} 处` : '未修改' }}</span>
       <span class="spacer"></span>
-      <button type="button" :disabled="busy || pending === 0" @click="preview">预览改动</button>
-      <button type="button" :disabled="busy" @click="load">重新读取</button>
+      <button type="button" class="btn mini" :disabled="busy || pending === 0" @click="preview">预览改动</button>
+      <button type="button" class="btn mini" :disabled="busy" @click="load">重新读取</button>
     </footer>
 
     <ModalShell v-if="planOpen && plan" title="设置改动预览（未写入）" :busy="busy" @close="planOpen = false">
@@ -418,24 +436,24 @@ async function openRaw(file) {
           <span class="muted">{{ valueText(change.from) }} → {{ valueText(change.to) }}</span>
         </li>
       </ul>
-      <p v-for="warning in plan.warnings" :key="warning" class="warn small">{{ warning }}</p>
+      <p v-for="warning in plan.warnings" :key="warning" class="warn-line">{{ warning }}</p>
       <details v-for="file in plan.files.filter((item) => item.status !== 'noop')" :key="file.file" open>
         <summary>{{ file.file }}（+{{ file.diff.added }} / -{{ file.diff.removed }}）</summary>
         <pre class="diff">{{ file.diffText }}</pre>
       </details>
       <template #footer>
-        <span class="muted small">保存会先备份原文件，再原子写入并回读校验。</span>
+        <span class="hint">保存会先备份原文件，再原子写入并回读校验。</span>
         <span class="spacer"></span>
-        <button type="button" :disabled="busy" @click="planOpen = false">取消</button>
-        <button type="button" class="primary" :disabled="busy || plan.changedFiles.length === 0" @click="confirmSave">确认保存</button>
+        <button type="button" class="mini" :disabled="busy" @click="planOpen = false">取消</button>
+        <button type="button" class="btn primary" :disabled="busy || plan.changedFiles.length === 0" @click="confirmSave">确认保存</button>
       </template>
     </ModalShell>
 
     <ModalShell v-if="rawOpen" title="配置文件原文（只读）" @close="rawOpen = false">
-      <p v-if="rawError" class="error">{{ rawError }}</p>
+      <p v-if="rawError" class="error-line">{{ rawError }}</p>
       <pre class="raw">{{ rawText }}</pre>
       <template #footer>
-        <span class="muted small">本视图只读：写配置一律经过设置表单，以避免手工编辑破坏 TOML 结构。</span>
+        <span class="hint">本视图只读：写配置一律经过设置表单，以避免手工编辑破坏 TOML 结构。</span>
       </template>
     </ModalShell>
 
@@ -468,155 +486,107 @@ async function openRaw(file) {
 .settings-nav {
   width: 260px;
   border-right: 1px solid var(--border);
-  padding: 8px;
+  padding: var(--space-md);
   overflow: auto;
   background: var(--surface-2);
 }
 
 .nav-head {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px 6px 8px;
-  font-size: 13px;
+  align-items: center;
+  min-height: var(--control-h);
+  padding: 0 var(--space-sm);
 }
 
+/* A group entry is a list row: the label, then the file that group writes. */
 .nav-item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
   width: 100%;
-  border: 1px solid transparent;
-  background: transparent;
-  padding: 6px 8px;
-  border-radius: 6px;
-  cursor: pointer;
+  align-items: center;
   font: inherit;
   text-align: left;
 }
 
-.nav-item:hover {
-  background: var(--surface-3);
-}
-
-.nav-item.active {
-  background: var(--surface);
-  border-color: var(--border-strong);
-}
-
-.nav-item .file,
-.small {
-  font-size: 11px;
+.nav-item + .nav-item {
+  border-top-color: transparent;
 }
 
 .files {
-  margin-top: 12px;
+  margin-top: var(--space-lg);
   border-top: 1px solid var(--border);
-  padding-top: 8px;
+  padding-top: var(--space-md);
 }
 
 .files-head {
-  font-size: 11px;
+  padding: 0 var(--space-sm) var(--space-xs);
   color: var(--muted);
-  padding: 0 6px 4px;
+  font-size: var(--text-xs);
 }
 
 .file-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 6px;
-  font-size: 11px;
-}
-
-.file-row code {
-  flex: 0 0 auto;
-}
-
-.file-row .mini {
-  margin-left: auto;
+  padding: var(--space-xs) var(--space-sm);
+  font-size: var(--text-xs);
 }
 
 .settings-main {
   flex: 1;
   overflow: auto;
-  padding: 10px 14px 20px;
+  padding: var(--space-md) var(--space-lg) var(--space-xl);
+}
+
+/* One setting: the key, where it comes from, and its control. */
+.setting {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  margin-bottom: var(--space-md);
+}
+
+.setting.edited {
+  border-color: var(--warning-border);
+  background: var(--warning-soft);
+}
+
+.setting-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  font-size: var(--text-md);
+}
+
+.setting-head label {
+  color: var(--text-strong);
+  font-weight: var(--weight-medium);
+}
+
+.control {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.control > input[type='text'],
+.control > input[type='number'],
+.control > select {
+  flex: 1 1 260px;
+  max-width: 460px;
 }
 
 .group-head {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-bottom: 10px;
+  margin-bottom: var(--space-md);
 }
 
-.row {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-  margin-bottom: 8px;
-  background: var(--surface);
-}
 
-.row.edited {
-  border-color: var(--warning);
-  box-shadow: inset 3px 0 0 var(--warning);
-}
 
-.row-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-}
-
-.control {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.control input[type='text'],
-.control input[type='number'],
-.control select {
-  min-width: 260px;
-  padding: 3px 6px;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  font: inherit;
-}
-
-.badge {
-  font-size: 11px;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  padding: 0 6px;
-  color: var(--text);
-  background: var(--surface-2);
-}
-
-.badge.theme {
-  border-color: var(--accent-border);
-  background: var(--accent-soft);
-}
-
-.badge.warn,
-.warn {
-  color: var(--warning);
-}
-
-.warn {
-  font-size: 11px;
-}
-
-.muted {
-  color: var(--muted);
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
 
 .link {
   border: 0;
@@ -628,21 +598,21 @@ async function openRaw(file) {
 }
 
 .overrides {
-  margin-top: 6px;
+  margin-top: var(--space-sm);
 }
 
 .override-list {
-  margin-top: 6px;
+  margin-top: var(--space-sm);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-xs);
 }
 
 .override-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: var(--space-sm);
+  font-size: var(--text-sm);
 }
 
 .override-row.edited {
@@ -654,35 +624,28 @@ async function openRaw(file) {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-.override-row input {
-  flex: 0 0 320px;
-  padding: 3px 6px;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  font: inherit;
-}
 
 .widgets,
 .menu-entry,
 .menu-add {
-  margin-top: 6px;
+  margin-top: var(--space-sm);
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-sm);
 }
 
 .widget-row,
 .menu-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: var(--space-sm);
+  font-size: var(--text-sm);
 }
 
 .menu-entry {
   border: 1px solid var(--surface-3);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: var(--space-sm) var(--space-md);
 }
 
 .menu-entry.removing {
@@ -693,103 +656,73 @@ async function openRaw(file) {
 .menu-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 6px;
+  gap: var(--space-sm);
 }
 
 .menu-field {
   display: flex;
   flex-direction: column;
-  font-size: 11px;
+  font-size: var(--text-xs);
   color: var(--text);
 }
 
-.menu-field input[type='text'] {
-  padding: 3px 6px;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  font: inherit;
-}
 
 .menu-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-sm);
 }
 
 .lang-table {
-  margin-top: 6px;
+  margin-top: var(--space-sm);
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .lang-table th,
 .lang-table td {
   border: 1px solid var(--border);
-  padding: 4px 6px;
+  padding: var(--space-xs) var(--space-sm);
   text-align: left;
 }
 
-.lang-table input {
-  width: 140px;
-  padding: 3px 6px;
-  border: 1px solid var(--border-strong);
-  border-radius: 4px;
-  font: inherit;
-}
 
 .unmanaged {
-  margin-top: 16px;
+  margin-top: var(--space-xl);
   border-top: 1px dashed var(--border-strong);
-  padding-top: 10px;
+  padding-top: var(--space-md);
 }
 
 .unmanaged-file ul {
-  margin: 4px 0 10px;
-  padding-left: 18px;
-  font-size: 12px;
+  margin: var(--space-xs) 0 var(--space-md);
+  padding-left: var(--space-xl);
+  font-size: var(--text-sm);
 }
 
 .settings-foot {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-md);
   border-top: 1px solid var(--border);
-  padding: 8px 14px;
+  padding: var(--space-md) var(--space-lg);
   background: var(--surface-2);
 }
 
-.settings-foot button,
-.menu-actions button,
-.widget-row button {
-  padding: 3px 8px;
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  border-radius: 4px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-}
-
-.settings-foot button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-}
 
 .dirty {
   color: var(--warning);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 
 .change-list {
-  margin: 6px 0;
-  padding-left: 18px;
-  font-size: 12px;
+  margin: var(--space-sm) 0;
+  padding-left: var(--space-xl);
+  font-size: var(--text-sm);
 }
 
 .change-list li {
   display: flex;
-  gap: 8px;
+  gap: var(--space-md);
 }
 
 .diff,
@@ -799,34 +732,10 @@ async function openRaw(file) {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 8px;
+  padding: var(--space-md);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
+  font-size: var(--text-xs);
   white-space: pre-wrap;
 }
 
-.error {
-  color: var(--error);
-  font-size: 12px;
-}
-
-.flash {
-  padding: 8px 14px;
-  background: var(--success-soft);
-  border-top: 1px solid var(--success-border);
-  font-size: 12px;
-}
-
-.spacer {
-  margin-left: auto;
-}
-
-.mini {
-  padding: 1px 6px;
-  border: 1px solid var(--border-strong);
-  background: var(--surface);
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 11px;
-}
 </style>

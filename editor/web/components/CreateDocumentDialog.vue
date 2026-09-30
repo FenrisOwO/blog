@@ -80,7 +80,7 @@ function languageLabel(code) {
 
 <template>
   <ModalShell v-if="open" title="新建文档" :busy="busy" @close="emit('close')">
-    <div class="grid">
+    <div class="form-grid">
       <label>
         <span>形态</span>
         <select v-model="kind" :disabled="busy">
@@ -110,20 +110,20 @@ function languageLabel(code) {
       </label>
     </div>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <p v-if="error" class="error-line">{{ error }}</p>
 
     <div v-if="plan" class="plan">
       <div class="line"><span>路径</span><code>{{ plan.path }}</code></div>
       <div class="line"><span>类型</span><code>{{ currentKindLabel }} · {{ formLabel(plan.kind) }} · {{ plan.language }}</code></div>
-      <p v-for="warning in plan.warnings" :key="warning" class="warn">⚠ {{ warning }}</p>
-      <p v-if="hasConflict" class="error">
+      <p v-for="warning in plan.warnings" :key="warning" class="warn-line">⚠ {{ warning }}</p>
+      <p v-if="hasConflict" class="error-line">
         该路径已存在：<code>{{ plan.conflicts.map((entry) => entry.path).join(', ') }}</code>
       </p>
       <pre class="preview">{{ plan.text }}</pre>
     </div>
 
     <template #footer>
-      <button type="button" class="btn" :disabled="!canPlan" @click="emit('plan', request)">生成计划（dry-run）</button>
+      <button type="button" class="mini" :disabled="!canPlan" @click="emit('plan', request)">生成计划（dry-run）</button>
       <button
         type="button"
         class="btn primary"
@@ -138,17 +138,20 @@ function languageLabel(code) {
 </template>
 
 <style scoped>
-.grid {
+/* The creation dialog: a two-column form grid. Inputs, buttons and banners come
+   from base.css, so this dialog cannot drift from the delete dialog. */
+
+.form-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-lg);
 }
 
 label {
   display: grid;
-  gap: 3px;
-  font-size: 12px;
+  gap: var(--space-xs);
   color: var(--muted);
+  font-size: var(--text-sm);
 }
 
 label.wide {
@@ -158,29 +161,21 @@ label.wide {
 .shape {
   grid-column: 1 / -1;
   margin: 0;
-  font-size: 11.5px;
   color: var(--muted);
-}
-
-input,
-select {
-  padding: 5px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  font: inherit;
-  font-size: 12px;
+  font-size: var(--text-xs);
 }
 
 .plan {
-  margin-top: 12px;
-  padding-top: 10px;
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
   border-top: 1px solid var(--border);
 }
 
 .line {
   display: flex;
-  gap: 8px;
-  margin-bottom: 4px;
+  gap: var(--space-md);
+  margin-bottom: var(--space-xs);
+  font-size: var(--text-sm);
 }
 
 .line span {
@@ -189,56 +184,19 @@ select {
 }
 
 .line code,
-.error code {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+.error-line code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 
 .preview {
-  margin: 8px 0 0;
-  padding: 8px 10px;
-  border-radius: 6px;
+  margin: var(--space-md) 0 0;
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   background: var(--surface-2);
-  border: 1px solid var(--surface-3);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11.5px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   white-space: pre-wrap;
-}
-
-.error {
-  margin: 8px 0;
-  color: var(--error);
-}
-
-.warn {
-  margin: 4px 0;
-  color: var(--warning);
-}
-
-.btn {
-  padding: 5px 12px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--surface);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.btn.primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.hint {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--faint);
 }
 </style>

@@ -89,7 +89,12 @@ test('a settings change survives a real Hugo build into the public output', asyn
     new RegExp(`localStorage\\.setItem\\(colorSchemeKey, "${escape(colorSchemeBefore)}"\\)`),
     'the effective color scheme',
   );
-  assert.match(readPublic('index.html'), new RegExp(`${sinceBefore} -`), 'footer since');
+  // The theme prints "<since> - <year>" only while `since` differs from the current year; the
+  // moment the site is configured with this year, it prints the single year. Follow the same
+  // rule instead of pinning the assertion to a calendar that moves under the test.
+  const currentYear = new Date().getFullYear();
+  const footerSince = Number(sinceBefore) === currentYear ? `${sinceBefore}` : `${sinceBefore} -`;
+  assert.match(readPublic('index.html'), new RegExp(escape(footerSince)), 'footer since');
   assert.match(readPublic('index.html'), /class="search-form widget"/, 'homepage search widget');
   assert.match(readPublic('index.html'), new RegExp(`<ol class="menu-social">[\\s\\S]*${escape(firstSocialUrl)}`));
   assert.doesNotMatch(readPublic('index.html'), /mastodon\.social/);

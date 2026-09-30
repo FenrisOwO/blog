@@ -55,14 +55,18 @@ function refresh() {
         />
         自动刷新
       </label>
-      <button class="btn" :class="{ highlight: stale }" @click="refresh">刷新</button>
-      <a class="btn" :href="url" target="_blank" rel="noopener">新窗口</a>
+      <button type="button" class="btn mini" :class="{ primary: stale }" @click="refresh">刷新</button>
+      <a class="btn mini" :href="url" target="_blank" rel="noopener">新窗口</a>
     </header>
     <iframe :key="frameKey" class="frame" :src="src" title="站点预览"></iframe>
   </section>
 </template>
 
 <style scoped>
+/* The preview is a pane of the workspace: its header uses the same height and
+   padding as every other pane header, and its badges and buttons are the shared
+   ones (a preview badge used to be a different pill from a workspace badge). */
+
 .preview {
   flex: 1;
   display: flex;
@@ -76,66 +80,30 @@ function refresh() {
 .preview-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 12px;
+  gap: var(--space-md);
+  min-height: var(--panel-head-h);
+  padding: 0 var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
   background: var(--surface-2);
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
 }
 
 .preview-head .url {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.preview-head .spacer {
-  flex: 1;
-}
-
-.badge {
-  padding: 1px 7px;
-  border-radius: 8px;
-  background: var(--surface-3);
-  color: var(--muted);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
-}
-
-.badge.warn {
-  background: var(--warning-soft);
-  color: var(--warning);
-}
-
-.toggle {
-  display: flex;
+.preview-head .toggle {
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 11px;
+  gap: var(--space-xs);
+  font-size: var(--text-xs);
   cursor: pointer;
-}
-
-.btn {
-  padding: 4px 10px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 11px;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.btn:hover {
-  background: var(--surface-3);
-}
-
-.btn.highlight {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
 }
 
 .frame {

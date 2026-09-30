@@ -192,7 +192,7 @@ watch(() => props.reloadKey, loadStatus);
         <button type="button" :aria-pressed="tab === 'changes'" @click="tab = 'changes'">变更 {{ changes.length }}</button>
         <button type="button" :aria-pressed="tab === 'history'" @click="tab = 'history'">历史 {{ log?.commits?.length ?? 0 }}</button>
       </div>
-      <button type="button" class="btn sm" :disabled="loading" @click="loadStatus">刷新</button>
+      <button type="button" class="btn mini" :disabled="loading" @click="loadStatus">刷新</button>
     </header>
 
     <p v-if="error" class="state error">
@@ -348,21 +348,16 @@ watch(() => props.reloadKey, loadStatus);
 .file-filter {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
   border-bottom: 1px solid var(--border);
 }
 
+/* The filter bar spans the pane; the input inside it keeps the shared control
+   look, so this only decides how it shares the row. */
 .file-filter input {
   flex: 1 1 auto;
   min-width: 0;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: var(--text-sm);
 }
 
 .git-panel {
@@ -386,8 +381,8 @@ watch(() => props.reloadKey, loadStatus);
 .git-side {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
+  gap: var(--space-md);
+  padding: var(--space-lg);
   min-height: 0;
   overflow-y: auto;
 }
@@ -398,8 +393,8 @@ watch(() => props.reloadKey, loadStatus);
 
 .commit-box {
   display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
+  gap: var(--space-sm);
+  padding: var(--space-md) var(--space-lg);
   border-top: 1px solid var(--border);
   background: var(--surface-2);
 }
@@ -408,7 +403,7 @@ watch(() => props.reloadKey, loadStatus);
 .commit-actions {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-md);
 }
 
 textarea {
@@ -418,15 +413,15 @@ textarea {
 .check {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-sm);
 }
 
 .commit-row {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-md);
   width: 100%;
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-sm) var(--space-md);
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
@@ -447,7 +442,7 @@ textarea {
 
 .commit-body {
   margin: 0;
-  padding: var(--space-3);
+  padding: var(--space-md);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   font-family: var(--font-mono);
@@ -456,7 +451,7 @@ textarea {
 }
 
 .file-list.compact .file-row {
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-xs) var(--space-sm);
 }
 
 .diff {

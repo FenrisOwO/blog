@@ -232,7 +232,7 @@ function onPick(event) {
 
       <div class="drop" @dragover.prevent @drop.prevent="onDrop">
         <p>把图片拖到这里，或者</p>
-        <label class="btn sm">
+        <label class="btn mini">
           选择文件
           <input type="file" accept="image/*" hidden :disabled="busy" @change="onPick" />
         </label>
@@ -309,27 +309,17 @@ function onPick(event) {
 </template>
 
 <style scoped>
-.error-line {
-  margin: 0;
-  padding: var(--space-3);
-  border: 1px solid var(--error-border);
-  border-radius: var(--radius-md);
-  background: var(--error-soft);
-  color: var(--error);
-  font-size: var(--text-sm);
-}
-
 .grid-2 {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: var(--space-4);
+  gap: var(--space-lg);
 }
 
 .drop {
   display: grid;
   justify-items: center;
-  gap: var(--space-2);
-  padding: var(--space-5);
+  gap: var(--space-sm);
+  padding: var(--space-xl);
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-md);
   background: var(--surface-2);
@@ -339,8 +329,8 @@ function onPick(event) {
 
 .upload-plan {
   display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3);
+  gap: var(--space-sm);
+  padding: var(--space-md);
   border: 1px solid var(--accent-border);
   border-radius: var(--radius-md);
   background: var(--accent-soft);
@@ -348,20 +338,20 @@ function onPick(event) {
 }
 
 .resources h4 {
-  margin: 0 0 var(--space-2);
+  margin: 0 0 var(--space-sm);
 }
 
 .resource-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
-  gap: var(--space-3);
+  gap: var(--space-md);
 }
 
 .resource {
   display: grid;
-  gap: var(--space-1);
+  gap: var(--space-xs);
   justify-items: center;
-  padding: var(--space-2);
+  padding: var(--space-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface);

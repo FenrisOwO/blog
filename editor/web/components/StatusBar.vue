@@ -16,9 +16,12 @@ const props = defineProps({
   themePreference: { type: String, default: 'system' },
   core: { type: String, default: '' },
   autoBuildOnSave: { type: Boolean, default: true },
+  // So the two pane toggles can report their state instead of only offering an action.
+  listOpen: { type: Boolean, default: true },
+  inspectorOpen: { type: Boolean, default: true },
 });
 
-const emit = defineEmits(['build', 'open-preview', 'theme', 'git', 'save', 'toggle-inspector']);
+const emit = defineEmits(['build', 'open-preview', 'theme', 'git', 'save', 'toggle-inspector', 'toggle-list']);
 
 const SAVE_LABELS = {
   clean: '未修改',
@@ -86,7 +89,8 @@ function cycleTheme() {
       @click="emit('save')"
     >
       <span class="dot-state" aria-hidden="true"></span>
-      <span>{{ SAVE_GLYPHS[save.state] ?? '·' }} {{ saveLabel }}</span>
+      <span class="icon sm" aria-hidden="true">{{ SAVE_GLYPHS[save.state] ?? '·' }}</span>
+      <span>{{ saveLabel }}</span>
     </button>
 
     <button type="button" class="status-item" :class="buildClass" :title="buildLabel" @click="emit('build')">
@@ -96,6 +100,7 @@ function cycleTheme() {
     </button>
 
     <button type="button" class="status-item" title="打开预览（构建输出）" @click="emit('open-preview')">
+      <span class="icon sm" aria-hidden="true">🔗</span>
       <span>预览</span>
       <code>{{ preview }}</code>
     </button>
@@ -110,14 +115,32 @@ function cycleTheme() {
     <button
       type="button"
       class="status-item"
-      :title="`主题：${themePreference === 'system' ? '跟随系统' : themePreference === 'dark' ? '深色' : '浅色'}`"
+      :title="`主题：${themePreference === 'system' ? '跟随系统' : themePreference === 'dark' ? '深色' : '浅色'}（点击切换）`"
       @click="cycleTheme"
     >
-      <span>{{ theme === 'dark' ? '🌙' : '☀️' }}</span>
+      <span class="icon sm" aria-hidden="true">{{ theme === 'dark' ? '🌙' : '☀️' }}</span>
       <span>{{ themePreference === 'system' ? '系统' : theme === 'dark' ? '深色' : '浅色' }}</span>
     </button>
 
-    <button type="button" class="status-item" title="显示 / 隐藏检查器" @click="emit('toggle-inspector')">
+    <button
+      type="button"
+      class="status-item"
+      :aria-pressed="listOpen"
+      :title="listOpen ? '隐藏文章列表' : '显示文章列表'"
+      @click="emit('toggle-list')"
+    >
+      <span class="icon sm" aria-hidden="true">📄</span>
+      <span>文章列表</span>
+    </button>
+
+    <button
+      type="button"
+      class="status-item"
+      :aria-pressed="inspectorOpen"
+      :title="inspectorOpen ? '隐藏检查器' : '显示检查器'"
+      @click="emit('toggle-inspector')"
+    >
+      <span class="icon sm" aria-hidden="true">🔎</span>
       <span>检查器</span>
     </button>
 
@@ -128,12 +151,10 @@ function cycleTheme() {
 </template>
 
 <style scoped>
+/* Everything here is the shared `.statusbar` / `.status-item` / `.badge` look;
+   this file only keeps the status bar's own type size for the preview path. */
+
 .statusbar code {
   font-size: var(--text-xs);
-}
-
-.badge {
-  padding: 0 4px;
-  font-size: 10px;
 }
 </style>

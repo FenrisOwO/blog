@@ -80,13 +80,13 @@ watch(edits, (next) => emit('edits', next), { deep: true });
 
 <template>
   <div class="form">
-    <p v-if="model && !model.editable" class="notice">表单不可用：{{ model.reason }}。请在“原文”标签中编辑。</p>
+    <p v-if="model && !model.editable" class="warn-line">表单不可用：{{ model.reason }}。请在“原文”标签中编辑。</p>
 
     <template v-else-if="model">
       <section v-if="editableFields.length > 0" class="group">
         <h4>字段</h4>
         <p class="rule">留空表示不修改；要删除某个字段，请点该行右侧的 ✕。</p>
-        <div v-for="field in editableFields" :key="field.path" class="row" :class="{ gone: isRemoved(field.path) }">
+        <div v-for="field in editableFields" :key="field.path" class="form-row" :class="{ gone: isRemoved(field.path) }">
           <label :for="`f-${field.path}`">
             <span class="label">{{ field.label }}</span>
             <code class="path">{{ field.path }}</code>
@@ -148,7 +148,7 @@ watch(edits, (next) => emit('edits', next), { deep: true });
             v-for="field in addableFields"
             :key="field.key"
             type="button"
-            class="chip"
+            class="chip-add"
             :disabled="disabled"
             :title="`新增 ${field.key}（${field.type}）`"
             @click="addField(field)"
@@ -187,50 +187,48 @@ watch(edits, (next) => emit('edits', next), { deep: true });
       </section>
     </template>
 
-    <p v-else class="notice">未选择文档。</p>
+    <p v-else class="warn-line">未选择文档。</p>
   </div>
 </template>
 
 <style scoped>
+/* The front-matter form is a three-column grid: label + path, control, action.
+   Everything else - controls, buttons, banners, type - comes from base.css. */
+
 .form {
   overflow: auto;
-  padding: 10px 14px 16px;
-  font-size: 12px;
+  padding: var(--panel-pad-x);
 }
 
-.notice {
-  margin: 6px 0;
-  color: var(--warning);
+.form-row {
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr) 28px;
+  gap: var(--space-md);
+  align-items: start;
+  padding: var(--space-xs) 0;
+}
+
+.form-row.gone .label {
+  text-decoration: line-through;
+  color: var(--faint);
 }
 
 .group {
-  margin-bottom: 14px;
+  margin-bottom: var(--space-lg);
+}
+
+.group h4 {
+  margin: 0 0 var(--space-sm);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+  text-transform: none;
 }
 
 .rule {
-  margin: 0 0 6px;
+  margin: 0 0 var(--space-sm);
   color: var(--faint);
-  font-size: 11px;
-}
-
-h4 {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.row {
-  display: grid;
-  grid-template-columns: 190px 1fr 28px;
-  gap: 8px;
-  align-items: start;
-  padding: 4px 0;
-}
-
-.row.gone .label {
-  text-decoration: line-through;
-  color: var(--faint);
+  font-size: var(--text-xs);
 }
 
 label {
@@ -243,103 +241,83 @@ label {
 }
 
 .path {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 10.5px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
   color: var(--faint);
 }
 
-.input {
+.input,
+.locked {
   display: flex;
-  gap: 6px;
+  gap: var(--space-sm);
   align-items: center;
 }
 
-input,
-select,
-textarea {
-  width: 100%;
-  padding: 4px 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--surface);
+.input > input,
+.input > select,
+.input > textarea {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 textarea {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  resize: vertical;
-}
-
-.mini {
-  padding: 2px 7px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--muted);
-  font: inherit;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.mini.danger {
-  color: var(--error);
-}
-
-.mini:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-.spacer-cell {
-  display: block;
+  font-family: var(--font-mono);
 }
 
 .gone-note {
   color: var(--error);
 }
 
+/* The "add a field" affordance is deliberately dashed: it is a suggestion, not
+   a value that exists yet. */
 .chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--space-sm);
 }
 
-.chip {
-  padding: 3px 9px;
+.chip-add {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-md);
   border: 1px dashed var(--border-strong);
-  border-radius: 12px;
+  border-radius: var(--radius-pill);
   background: var(--surface-2);
   color: var(--muted);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 
-.chip:hover:not(:disabled) {
+.chip-add:hover:not(:disabled) {
   border-color: var(--accent);
   color: var(--accent);
 }
 
-.chip code {
+.chip-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chip-add code {
   color: var(--faint);
 }
 
 .locked {
-  display: flex;
-  gap: 8px;
-  padding: 2px 0;
+  flex-wrap: wrap;
+  padding: var(--space-xs) 0;
   color: var(--muted);
 }
 
 .locked code {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 
 .reason {
-  font-size: 11px;
   color: var(--faint);
+  font-size: var(--text-xs);
 }
 </style>
