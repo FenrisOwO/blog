@@ -86,9 +86,9 @@ test('the editor scope covers the whole content tree and reports it per section'
     assert.deepEqual(site.contentKinds, { article: ['post'], page: ['page'], taxonomy: ['categories', 'tags'] });
 
     const body = await (await fetch(`${base}/api/documents`)).json();
-    assert.equal(body.count, 50);
+    assert.equal(body.count, 51);
     assert.deepEqual(body.sections, [
-      { section: 'post', label: 'post', count: 26 },
+      { section: 'post', label: 'post', count: 27 },
       { section: 'page', label: 'page', count: 16 },
       { section: 'categories', label: 'categories', count: 4 },
       { section: '', label: '(根)', count: 4 },

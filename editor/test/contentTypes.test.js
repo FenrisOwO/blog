@@ -52,7 +52,7 @@ test('the site has all four types, and each row knows which one it is', async (t
 
   const counts = {};
   for (const doc of documents) counts[doc.contentKind] = (counts[doc.contentKind] ?? 0) + 1;
-  assert.deepEqual(counts, { article: 26, page: 16, category: 4, other: 4 });
+  assert.deepEqual(counts, { article: 27, page: 16, category: 4, other: 4 });
 
   // Bundle forms are a separate axis: an article can be a file or a bundle, and so can a page.
   const byPath = new Map(documents.map((doc) => [doc.path, doc]));

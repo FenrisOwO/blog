@@ -83,8 +83,8 @@ test('/api/documents lists the real articles without their contents', async () =
     assert.equal(response.status, 200);
     const body = await response.json();
 
-    assert.equal(body.count, 26);
-    assert.equal(body.documents.length, 26);
+    assert.equal(body.count, 27);
+    assert.equal(body.documents.length, 27);
     assert.equal(body.resources.length, 5);
 
     const doc = body.documents.find((candidate) => candidate.path === 'post/Image Gallery/index.en.md');

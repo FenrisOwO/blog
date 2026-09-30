@@ -67,19 +67,19 @@ test('the scope is what decides how much of the site the editor can see and writ
     section: 'post',
     backupRoot: sandbox.backupRoot,
   });
-  assert.equal((await narrow.listDocuments()).length, 26);
-  assert.deepEqual(await narrow.listSections(), [{ section: 'post', label: 'post', count: 26 }]);
+  assert.equal((await narrow.listDocuments()).length, 27);
+  assert.deepEqual(await narrow.listSections(), [{ section: 'post', label: 'post', count: 27 }]);
   assert.throws(() => narrow.read(ABOUT), /document not found/);
 
   const wide = makeService(sandbox);
-  assert.equal((await wide.listDocuments()).length, 50);
+  assert.equal((await wide.listDocuments()).length, 51);
 
   // Sections are reported in the order the scope declares them, root last.
   const sections = await wide.listSections();
   assert.deepEqual(sections, [
     { section: 'categories', label: 'categories', count: 4 },
     { section: 'page', label: 'page', count: 16 },
-    { section: 'post', label: 'post', count: 26 },
+    { section: 'post', label: 'post', count: 27 },
     { section: '', label: '(根)', count: 4 },
   ]);
 

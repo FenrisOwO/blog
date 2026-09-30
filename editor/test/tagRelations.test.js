@@ -54,6 +54,30 @@ function treeFingerprint(dir, base = dir, out = {}) {
   return out;
 }
 
+// The fixture is a copy of the user's site, so its vocabulary is a fact to read, not a constant to
+// pin: the person who owns the site keeps writing in it. An identity is case-insensitive (that is
+// the property under test), a name is one spelling of it, and a usage is one document carrying it.
+function tagVocabulary(dir, base = dir, out = new Map()) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const abs = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      tagVocabulary(abs, base, out);
+      continue;
+    }
+    if (!entry.name.endsWith('.md')) continue;
+    const frontMatter = readFileSync(abs, 'utf8').split(/^---\s*$/m)[1] ?? '';
+    const block = frontMatter.split(/^tags:/m)[1]?.split(/^\S/m)[0] ?? '';
+    for (const line of block.matchAll(/^\s*-\s*(.+?)\s*$/gm)) {
+      const name = line[1].replace(/^['"]|['"]$/g, '');
+      const identity = out.get(name.toLowerCase()) ?? { names: new Set(), docs: new Set() };
+      identity.names.add(name);
+      identity.docs.add(abs.slice(base.length + 1));
+      out.set(name.toLowerCase(), identity);
+    }
+  }
+  return out;
+}
+
 function diffFingerprints(before, after) {
   const changed = [];
   for (const path of new Set([...Object.keys(before), ...Object.keys(after)])) {
@@ -68,21 +92,23 @@ test('the tag index comes from the real tree: usage, spellings and languages', a
     const { tags, termPages } = await fixture.relations.listTags();
     const byName = new Map(tags.map((tag) => [tag.name, tag]));
 
-    // 14 spellings, 13 identities: `markdown` and `Markdown` are one tag as far as Hugo is
-    // concerned, and the index reports them as one.
-    assert.equal(tags.length, 13, `unexpected tag count: ${tags.map((tag) => tag.name).join(', ')}`);
-    assert.equal(tags.flatMap((tag) => tag.names).length, 14);
-    assert.equal(byName.get('pagination').usage, 12);
-    assert.equal(byName.get('test').usage, 12);
-    assert.equal(byName.get('Gallery').usage, 4);
-    assert.equal(byName.get('隐私').usage, 3);
+    // The index has to agree with the documents: one identity per case-insensitive spelling, one
+    // name per spelling, one usage per document that carries it. Counting from the front matter
+    // keeps that true when an article is added - `markdown` and `Markdown` are still one tag, and
+    // the index still reports them as one, which is what this test is for.
+    const vocabulary = tagVocabulary(join(fixture.root, 'content'));
+    const spellings = [...vocabulary.values()].reduce((total, entry) => total + entry.names.size, 0);
+    assert.equal(tags.length, vocabulary.size, `unexpected tag count: ${tags.map((tag) => tag.name).join(', ')}`);
+    assert.equal(tags.flatMap((tag) => tag.names).length, spellings);
+    for (const name of ['pagination', 'test', 'Gallery', '隐私', 'themes']) {
+      assert.equal(byName.get(name).usage, vocabulary.get(name.toLowerCase()).docs.size, `${name} usage`);
+    }
     assert.deepEqual(byName.get('隐私').languages, ['ja', 'zh', 'zh-hant-tw']);
-    assert.equal(byName.get('themes').usage, 2);
 
     // `markdown` and `Markdown` are one Hugo term, and the index says so instead of showing two
     // unrelated tags.
     const markdown = byName.get('markdown');
-    assert.equal(markdown.usage, 3);
+    assert.equal(markdown.usage, vocabulary.get('markdown').docs.size);
     assert.deepEqual(markdown.names.map((entry) => entry.name).sort(), ['Markdown', 'markdown']);
     assert.equal(markdown.conflicts.length, 1);
     assert.equal(markdown.conflicts[0].type, 'spelling');

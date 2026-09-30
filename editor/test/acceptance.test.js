@@ -58,8 +58,8 @@ function makeSandbox(t) {
 test('the corpus is the size Phase 1 was specified against', () => {
   // The real tree, deliberately: the site gained an article when it was written through the
   // editor, and these counts exist to notice that a type silently disappeared.
-  assert.equal(ALL_MARKDOWN.length, 50);
-  assert.equal(WRITABLE.length, 26);
+  assert.equal(ALL_MARKDOWN.length, 51);
+  assert.equal(WRITABLE.length, 27);
   assert.equal(READ_ONLY.length, 24);
 });
 

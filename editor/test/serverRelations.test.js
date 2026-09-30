@@ -70,8 +70,8 @@ test('GET /api/tags returns the site tag index without reading any document body
     assert.equal(response.status, 200);
     const body = await response.json();
     assert.equal(body.tagTaxonomy, 'tags');
-    assert.equal(body.tags.length, 13);
-    assert.equal(body.tags.flatMap((tag) => tag.names).length, 14);
+    assert.equal(body.tags.length, 14);
+    assert.equal(body.tags.flatMap((tag) => tag.names).length, 15);
 
     const pagination = body.tags.find((tag) => tag.name === 'pagination');
     assert.equal(pagination.usage, 12);

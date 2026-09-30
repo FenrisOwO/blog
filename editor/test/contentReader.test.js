@@ -91,13 +91,13 @@ test('content/post is identified into standalone files, bundles and languages', 
   const result = await readSection({ contentRoot: CONTENT_ROOT, section: 'post', languages, defaultLanguage });
 
   assert.deepEqual(result.warnings, []);
-  assert.equal(result.documents.length, 26);
-  assert.equal(result.documents.filter((doc) => doc.kind === 'standalone').length, 13);
+  assert.equal(result.documents.length, 27);
+  assert.equal(result.documents.filter((doc) => doc.kind === 'standalone').length, 14);
   assert.equal(result.documents.filter((doc) => doc.kind === 'leaf-bundle').length, 13);
 
   const bundlePaths = new Set(result.documents.map((doc) => doc.bundlePath).filter(Boolean));
   assert.equal(bundlePaths.size, 5);
-  assert.equal(result.groups.length, 18); // 13 standalone + 5 bundles
+  assert.equal(result.groups.length, 19); // 14 standalone + 5 bundles
 
   const byId = new Map(result.documents.map((doc) => [doc.id, doc]));
   assert.equal(byId.get('post/Image Gallery/index.md').language, 'zh');
@@ -144,7 +144,7 @@ test('the whole content tree can be read, and branch bundles are recognised', as
   const { languages, defaultLanguage } = readSiteLanguages({ siteRoot: SITE_ROOT });
   const result = await readSection({ contentRoot: CONTENT_ROOT, section: '', languages, defaultLanguage });
 
-  assert.equal(result.documents.length, 50);
+  assert.equal(result.documents.length, 51);
 
   const byId = new Map(result.documents.map((doc) => [doc.id, doc]));
   assert.equal(byId.get('_index.md').kind, 'branch-bundle');

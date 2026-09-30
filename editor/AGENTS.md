@@ -376,7 +376,7 @@ rewritten at all.
     list rather than hiding it, unlike the inspector (which is deliberately hidden below 1200px).
   * The same file also walks the flow against the real tree: `/api/documents` -> pick an article
     -> `/api/documents/raw` -> the text equals the file byte for byte, with the hash and mtime
-    unchanged after every one of the 50 documents has been opened.
+    unchanged after every document in the tree has been opened.
 * Reading `.vue` sources in a test means slicing by markers, and `indexOf(end)` searches from 0 by
   default: the shell has nested `</header>` and `</aside>` tags, so the end marker has to be
   searched *after* the start marker. Getting that wrong makes a structural test assert against the
