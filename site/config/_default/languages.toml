@@ -1,0 +1,35 @@
+[en]
+    label  = "English"
+    locale = "en-US"
+    title  = "Fenris's Blog"
+    weight = 2
+
+    [en.params.sidebar]
+        subtitle = "Even the darkness will not be dark to you,the night will shine like the day."
+
+[zh]
+    label  = "简体中文"
+    locale = "zh-CN"
+    title  = "苍陨的博客"
+    weight = 1
+
+    [zh.params.sidebar]
+        subtitle = "南朝四百八十寺，多少楼台烟雨中。"
+
+[zh-hant-tw]
+    label  = "正體中文"
+    locale = "zh-Hant-TW"
+    title  = "蒼隕的網誌"
+    weight = 3
+
+    [zh-hant-tw.params.sidebar]
+        subtitle = "南朝四百八十寺，多少樓臺煙雨中。"
+
+[ja]
+    label  = "日本語"
+    locale = "ja-JP"
+    title  = "蒼隕のブログ"
+    weight = 4
+
+    [ja.params.sidebar]
+        subtitle = "この綺麗な火はね、燃えつづけて、闇を照らすんだ。"

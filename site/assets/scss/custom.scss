@@ -1,0 +1,32 @@
+/*!
+*   Site-level overrides (imported last by the theme's style.scss)
+*
+*   Typography: EB Garamond for Latin, Zhuque Fangsong (朱雀仿宋) for CJK.
+*   EB Garamond ships no CJK glyphs, so Chinese text falls through to
+*   Zhuque Fangsong; native FangSong faces cover users without the webfont.
+*/
+
+:root {
+    --base-font-family:
+        "EB Garamond", "Zhuque Fangsong",
+        FangSong, "FangSong_GB2312", STFangsong, "仿宋",
+        var(--sys-font-family), serif;
+
+    --article-font-family:
+        "EB Garamond", "Zhuque Fangsong",
+        FangSong, "FangSong_GB2312", STFangsong, "仿宋",
+        serif;
+}
+
+/* Font attribution rendered by the site footer */
+footer.site-footer .font-credits {
+    margin-top: 6px;
+    font-size: 1.2rem;
+    line-height: 1.7;
+    color: var(--card-text-color-tertiary);
+
+    a {
+        color: inherit;
+        text-decoration: underline;
+    }
+}

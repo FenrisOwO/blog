@@ -1,0 +1,25 @@
+{
+  "name": "hugo-visual-editor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local visual editor for the Hugo site in ../site. P1 focuses on lossless front-matter round-tripping.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test",
+    "accept": "node scripts/acceptance.mjs",
+    "build:web": "vite build",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "@codemirror/lang-markdown": "^6.5.2",
+    "codemirror": "^6.0.2",
+    "vue": "^3.5.43"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.9",
+    "vite": "^8.3.1"
+  }
+}

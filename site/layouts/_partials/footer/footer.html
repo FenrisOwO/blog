@@ -1,0 +1,41 @@
+{{- $ThemeVersion := "4.0.3" -}}
+{{- /*
+    Site-level override of footer/footer.html — adds the font attribution section.
+    Both web fonts are licensed under the SIL Open Font License 1.1, which
+    requires this notice (and the license text) to accompany the fonts.
+*/ -}}
+<footer class="site-footer">
+    <section class="copyright">
+        &copy;
+        {{ if and (.Site.Params.footer.since) (ne .Site.Params.footer.since (int (now.Format "2006"))) }}
+            {{ .Site.Params.footer.since }} -
+        {{ end }}
+        {{ now.Format "2006" }} {{ default .Site.Title .Site.Copyright }}
+    </section>
+
+    <section class="powerby">
+        {{ with .Site.Params.footer.customText }}
+            {{ . | safeHTML }} <br/>
+        {{ end }}
+
+        {{- $Generator := `<a href="https://gohugo.io/" target="_blank" rel="noopener">Hugo</a>` -}}
+        {{- $Theme := printf `<b><a href="https://github.com/CaiJimmy/hugo-theme-stack" target="_blank" rel="noopener" data-version="%s">Stack</a></b>` $ThemeVersion -}}
+        {{- $DesignedBy := `<a href="https://jimmycai.com" target="_blank" rel="noopener">Jimmy</a>` -}}
+
+        {{ T "footer.builtWith" (dict "Generator" $Generator) | safeHTML }} <br />
+        {{ T "footer.designedBy" (dict "Theme" $Theme "DesignedBy" $DesignedBy) | safeHTML }}
+    </section>
+
+    <section class="font-credits">
+        字体 Fonts:
+        <a href="https://github.com/TrionesType/zhuque" target="_blank" rel="noopener">朱雀仿宋 Zhuque Fangsong</a>
+        (璇玑造字 TrionesType, SIL OFL 1.1)
+        &middot;
+        <a href="https://github.com/octaviopardo/EBGaramond12" target="_blank" rel="noopener">EB Garamond</a>
+        (The EB Garamond Project Authors, SIL OFL 1.1)
+        &middot;
+        <a href="{{ "fonts/zhuque-fangsong/LICENSE.txt" | relURL }}" target="_blank" rel="noopener">仿宋许可</a>
+        /
+        <a href="{{ "fonts/ebgaramond/LICENSE.txt" | relURL }}" target="_blank" rel="noopener">Garamond 许可</a>
+    </section>
+</footer>

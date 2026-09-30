@@ -1,0 +1,45 @@
+# One baseline for the two things that live side by side here:
+#
+#   site/     the Hugo site - the source of truth (content, config, layouts, assets, static,
+#             the vendored hugo-theme-stack)
+#   editor/   the editor app that reads, writes and builds that site
+#
+# The rule is "ignore what can be regenerated, what belongs to this machine, or what a tool
+# produces at runtime". Everything a person wrote or configured is tracked - including the
+# vendored theme (there is no Hugo Modules or submodule setup here, so the build needs those
+# files to exist) and the 5.7 MB of fonts under site/static/, which the site really serves.
+#
+# Every pattern sits alone on its own line on purpose: gitignore has no trailing comments, so a
+# line reading "site/public/  # output" would silently match nothing.
+
+# --- the Hugo binary the editor shells out to ---
+# 62 MB, downloaded rather than built here, and documented in editor/docs/site-elements.md.
+.bin/
+
+# --- state Hugo generates for the site ---
+# published output: written only after a successful build, never hand-edited
+site/public/
+# Hugo's _gen cache (resized images, compiled assets), rebuilt on demand
+site/resources/
+# the lock file Hugo holds while a build is running, created on the first build; unanchored so it
+# is ignored wherever Hugo puts it
+.hugo_build.lock
+
+# --- the editor's runtime state ---
+# editor/.gitignore states the same four rules next to the code that owns them; they are repeated
+# here so that ignoring works from the repository root even if that file is ever reorganised.
+# npm install (matches at any depth)
+node_modules/
+# the built front end (npm run build:web); the server serves this directory
+editor/dist/
+# pre-save copies of source files, written by SafeWriter
+editor/.backups/
+# Hugo staging output and build cache, deliberately outside site/
+editor/.build/
+
+# --- local environment noise, never part of the project ---
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+*~

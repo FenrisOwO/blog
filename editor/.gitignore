@@ -1,0 +1,9 @@
+# The editor is a separate app; none of this may ever reach site/ or its Hugo output.
+node_modules/
+dist/
+
+# Runtime artifacts. Both live here - outside the Hugo project - on purpose:
+#   .backups/  pre-save copies of source files (SafeWriter)
+#   .build/    Hugo staging output and cache (never site/public)
+.backups/
+.build/

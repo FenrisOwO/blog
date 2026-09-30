@@ -1,0 +1,147 @@
+/* Design tokens.
+ *
+ * One place defines what a surface, a border, an accent and a piece of text look like, for both
+ * themes. Components never invent a colour: they use these variables, which is what makes
+ * "the UI has a design system" checkable (see test/designSystem.test.js, which refuses raw hex
+ * values in component styles).
+ *
+ * Theming: `data-theme` on <html> is the *resolved* theme (light or dark, never "system"), and
+ * `data-theme-preference` remembers what the user asked for. Resolving it in JS keeps this file
+ * to one definition per theme instead of duplicating the dark block inside a
+ * prefers-color-scheme query.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* surfaces and lines */
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-2: #f7f9fb;
+  --surface-3: #eef1f6;
+  --surface-hover: rgba(16, 24, 40, 0.045);
+  --surface-active: rgba(16, 24, 40, 0.075);
+  --border: #e0e5ec;
+  --border-strong: #c9d1dc;
+
+  /* text */
+  --text: #1b2430;
+  --text-strong: #0c1218;
+  --muted: #6a7481;
+  --faint: #98a1ad;
+  --on-accent: #ffffff;
+
+  /* semantics */
+  --accent: #2f6fed;
+  --accent-strong: #1c56c9;
+  --accent-soft: rgba(47, 111, 237, 0.11);
+  --accent-border: rgba(47, 111, 237, 0.35);
+  --success: #1c7c4a;
+  --success-soft: rgba(28, 124, 74, 0.12);
+  --success-border: rgba(28, 124, 74, 0.32);
+  --warning: #9a6400;
+  --warning-soft: rgba(217, 145, 0, 0.14);
+  --warning-border: rgba(217, 145, 0, 0.36);
+  --error: #b3261e;
+  --error-soft: rgba(179, 38, 30, 0.11);
+  --error-border: rgba(179, 38, 30, 0.32);
+  --info: #5b46a8;
+  --info-soft: rgba(91, 70, 168, 0.12);
+
+  /* editor */
+  --editor-active-line: rgba(47, 111, 237, 0.07);
+  --editor-selection: rgba(47, 111, 237, 0.22);
+  --editor-gutter: #98a1ad;
+
+  /* diff */
+  --diff-add-bg: rgba(28, 124, 74, 0.1);
+  --diff-add-text: #14603a;
+  --diff-del-bg: rgba(179, 38, 30, 0.09);
+  --diff-del-text: #94241d;
+  --diff-hunk-bg: rgba(47, 111, 237, 0.1);
+
+  /* elevation */
+  --shadow-1: 0 1px 2px rgba(12, 18, 24, 0.06), 0 1px 3px rgba(12, 18, 24, 0.05);
+  --shadow-2: 0 10px 30px rgba(12, 18, 24, 0.16), 0 2px 8px rgba(12, 18, 24, 0.1);
+
+  /* type */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 15px;
+  --text-xl: 18px;
+  --line-tight: 1.35;
+  --line-normal: 1.55;
+
+  /* spacing scale */
+  --space-1: 4px;
+  --space-2: 6px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 22px;
+  --space-7: 30px;
+  --space-8: 40px;
+
+  /* shape */
+  --radius-sm: 4px;
+  --radius-md: 7px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* layout */
+  --topbar-h: 46px;
+  --statusbar-h: 26px;
+  --rail-w: 196px;
+  --inspector-w: 312px;
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #0d1117;
+  --surface: #141a22;
+  --surface-2: #171e27;
+  --surface-3: #1c242e;
+  --surface-hover: rgba(255, 255, 255, 0.055);
+  --surface-active: rgba(255, 255, 255, 0.09);
+  --border: #242d38;
+  --border-strong: #36414f;
+
+  --text: #dfe6ee;
+  --text-strong: #f4f8fc;
+  --muted: #8c97a6;
+  --faint: #6b7684;
+  --on-accent: #0b1016;
+
+  --accent: #6ea8ff;
+  --accent-strong: #9dc4ff;
+  --accent-soft: rgba(110, 168, 255, 0.16);
+  --accent-border: rgba(110, 168, 255, 0.42);
+  --success: #62c98d;
+  --success-soft: rgba(98, 201, 141, 0.15);
+  --success-border: rgba(98, 201, 141, 0.4);
+  --warning: #e3b341;
+  --warning-soft: rgba(227, 179, 65, 0.15);
+  --warning-border: rgba(227, 179, 65, 0.4);
+  --error: #ff8b80;
+  --error-soft: rgba(255, 139, 128, 0.14);
+  --error-border: rgba(255, 139, 128, 0.4);
+  --info: #b39dff;
+  --info-soft: rgba(179, 157, 255, 0.15);
+
+  --editor-active-line: rgba(110, 168, 255, 0.09);
+  --editor-selection: rgba(110, 168, 255, 0.28);
+  --editor-gutter: #6b7684;
+
+  --diff-add-bg: rgba(98, 201, 141, 0.13);
+  --diff-add-text: #8fe0b0;
+  --diff-del-bg: rgba(255, 139, 128, 0.12);
+  --diff-del-text: #ffaca2;
+  --diff-hunk-bg: rgba(110, 168, 255, 0.15);
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 14px 40px rgba(0, 0, 0, 0.55), 0 2px 10px rgba(0, 0, 0, 0.4);
+}
