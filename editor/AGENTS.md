@@ -404,10 +404,15 @@ rewritten at all.
   as the rail entry it mirrors, so the palette and the rail cannot disagree about what a view is.
 * UI work is verified in a browser, not only by tests. `node server/index.js` wants port 1313, but a
   second instance can run on any free port without disturbing the first: build first
-  (`npm run build:web`), then start one with `watchSources: false` and `autoBuildOnSave: false` (so
-  it never writes to the site) - see the launcher snippet in this file's history - and open
-  `http://127.0.0.1:<port>/editor/`. Read dimensions from the rendered page, never from a scoped
-  stylesheet.
+  (`npm run build:web`), then start one that never writes to the site and open it:
+
+  ```bash
+  node -e "import('./server/index.js').then((m) => m.createEditorServer({ port: 8912, host: '127.0.0.1', watchSources: false, autoBuildOnSave: false }).listen(8912))"
+  # then http://127.0.0.1:8912/editor/
+  ```
+
+  Read dimensions from the rendered page (the labelled interactive elements are live there), never
+  from a scoped stylesheet.
 * The site belongs to a person who may be editing it *while* acceptance runs, in the editor window
   that is usually already open. Two consequences, both now built into `scripts/acceptance.mjs`:
   * expected values are **derived from the site** rather than pinned: the footer year comes from
