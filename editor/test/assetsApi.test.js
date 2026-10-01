@@ -9,16 +9,18 @@
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createEditorServer } from '../server/index.js';
+import { FIXTURE, FIXTURE_CONTENT, FIXTURE_SITE, INSTALLED_THEME } from './fixtures/harness.js';
 
 const ROOT = join(import.meta.dirname, '..');
-const SITE_ROOT = '/projects/site';
-const CONTENT_ROOT = join(SITE_ROOT, 'content');
-const GALLERY = 'post/Image Gallery';
+const SITE_ROOT = FIXTURE_SITE;
+const CONTENT_ROOT = FIXTURE_CONTENT;
+// The fixture leaf bundle with images (test/fixtures/README.md).
+const GALLERY = dirname(FIXTURE.bundle);
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==',
@@ -41,11 +43,19 @@ function fakeBuildService() {
   };
 }
 
+// A throwaway copy of the fixture site, complete enough for the server (config, static,
+// assets) with the installed theme in place.
+function fixtureSiteRoot(prefix) {
+  const root = mkdtempSync(join(tmpdir(), prefix));
+  for (const tree of ['config', 'content', 'static', 'assets']) {
+    cpSync(join(FIXTURE_SITE, tree), join(root, tree), { recursive: true });
+  }
+  cpSync(INSTALLED_THEME, join(root, 'themes', 'hugo-theme-stack'), { recursive: true });
+  return root;
+}
+
 function tempSite() {
-  const root = mkdtempSync(join(tmpdir(), 'hve-assets-http-'));
-  cpSync(CONTENT_ROOT, join(root, 'content'), { recursive: true });
-  cpSync(join(SITE_ROOT, 'config'), join(root, 'config'), { recursive: true });
-  cpSync(join(SITE_ROOT, 'themes'), join(root, 'themes'), { recursive: true });
+  const root = fixtureSiteRoot('hve-assets-http-');
   return {
     root,
     read: (relPath) => readFileSync(join(root, 'content', relPath)),
@@ -56,10 +66,11 @@ function tempSite() {
 
 async function withServer(run, overrides = {}) {
   const buildService = overrides.buildService ?? fakeBuildService();
+  const root = fixtureSiteRoot('hve-assets-server-');
   const server = createEditorServer({
-    siteRoot: SITE_ROOT,
-    contentRoot: join(SITE_ROOT, 'content'),
-    configRoot: join(SITE_ROOT, 'config', '_default'),
+    siteRoot: root,
+    contentRoot: join(root, 'content'),
+    configRoot: join(root, 'config', '_default'),
     editorDist: join(ROOT, 'dist'),
     watchSources: false,
     buildService,
@@ -71,6 +82,7 @@ async function withServer(run, overrides = {}) {
     await run(`http://127.0.0.1:${port}`, buildService);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    rmSync(root, { recursive: true, force: true });
   }
 }
 
@@ -92,18 +104,23 @@ test('GET /api/assets lists the content resources, the site trees and the limits
     assert.ok(gallery);
     assert.equal(gallery.contentKind, 'article');
     assert.equal(gallery.canUpload, true);
-    assert.equal(gallery.resources.length, 4);
+    assert.equal(gallery.resources.length, 2);
     assert.equal(gallery.resources.every((resource) => resource.capabilities.replace && resource.capabilities.delete), true);
-    assert.equal(gallery.resources.every((resource) => resource.referenced), true);
+    const photo = gallery.resources.find((resource) => resource.filename === 'fixture-photo.jpg');
+    const unused = gallery.resources.find((resource) => resource.filename === 'fixture-extra.png');
+    assert.equal(photo.referenced, true);
+    assert.equal(unused.referenced, false, 'a resource nobody points at is listed, not referenced');
     assert.match(gallery.resources[0].previewUrl, /^\/api\/assets\/raw\?location=content&path=/);
 
     // The site's own trees are listed, read-only, and the boundary is honest about it.
-    assert.equal(body.static.length > 100, true, 'static/ is mirrored');
-    assert.equal(body.assets.length, 3, 'assets/ holds the theme inputs');
+    assert.deepEqual(body.static.map((asset) => asset.path), [FIXTURE.staticLogo.replace('static/', '')]);
+    assert.deepEqual(body.assets.map((asset) => asset.path), [FIXTURE.siteAsset.replace('assets/', '')]);
     assert.equal(body.static.every((asset) => !asset.capabilities.replace && !asset.capabilities.delete), true);
     assert.equal(body.assets.every((asset) => asset.location === 'assets'), true);
-    assert.equal(body.summary.contentResources, 7);
-    assert.equal(body.summary.replaceable, 7);
+    // The fixture's content resources: the bundle's two images, the links page's logo and the
+    // category page's banner.
+    assert.equal(body.summary.contentResources, 4);
+    assert.equal(body.summary.replaceable, 4);
     assert.equal(body.limits.maxUploadBytes > 0, true);
     assert.deepEqual(body.limits.uploadExtensions.includes('.jpg'), true);
   });
@@ -111,7 +128,7 @@ test('GET /api/assets lists the content resources, the site trees and the limits
 
 test('GET /api/assets/raw serves the bytes of a listed resource, and nothing else', async () => {
   await withServer(async (base) => {
-    const path = `${GALLERY}/luca-bravo-alS7ewQ41M8-unsplash.jpg`;
+    const path = FIXTURE.bundleResource;
     const response = await fetch(`${base}/api/assets/raw?path=${encodeURIComponent(path)}`);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'image/jpeg');
@@ -126,9 +143,15 @@ test('GET /api/assets/raw serves the bytes of a listed resource, and nothing els
     assert.equal(revalidated.status, 304);
 
     // The site's other trees are reachable through the location that owns them.
-    const asset = await fetch(`${base}/api/assets/raw?location=assets&path=${encodeURIComponent('img/avatar.png')}`);
+    const siteAsset = FIXTURE.staticLogo.replace('static/', '');
+    const asset = await fetch(`${base}/api/assets/raw?location=static&path=${encodeURIComponent(siteAsset)}`);
     assert.equal(asset.status, 200);
     assert.equal(asset.headers.get('content-type'), 'image/png');
+    assert.equal(
+      sha(Buffer.from(await asset.arrayBuffer())),
+      sha(readFileSync(join(SITE_ROOT, FIXTURE.staticLogo))),
+      'the site asset is served byte for byte',
+    );
 
     // Everything else is a 404 - an unlisted file, a Markdown document, a climb out of the
     // tree. There is no "does this file exist" oracle behind this endpoint.
@@ -204,9 +227,9 @@ test('replace and delete write, back up, and schedule exactly one build each', a
   try {
     await withServer(
       async (base, buildService) => {
-        const path = `${GALLERY}/hudai-gayiran-3Od_VKcDEAA-unsplash.jpg`;
+        const path = FIXTURE.bundleResource;
         const before = sha(site.read(path));
-        const replacement = readFileSync(join(CONTENT_ROOT, GALLERY, 'luca-bravo-alS7ewQ41M8-unsplash.jpg'));
+        const replacement = readFileSync(join(CONTENT_ROOT, FIXTURE.linksResource));
 
         // Replace: plan, then write. The path does not change, so the page's references stay.
         const plan = await (await postJson(base, '/api/assets/replace', { path })).json();

@@ -1,24 +1,26 @@
 // P1.6 acceptance, as part of the regular suite.
 //
-// The exhaustive pass over the real corpus runs here; `npm run accept` runs the same
-// gate end to end (against the real files, plus a Hugo build). Everything in this file
-// is side-effect free: writes go to a sandbox copy, real files are only ever read.
+// The exhaustive pass over the fixture corpus (test/fixtures/README.md) runs here: every
+// document round-trips, every writable document is a no-op save, every read-only one is
+// refused, and the corpus itself is proven untouched afterwards. `npm run accept` runs the
+// same gate end to end against the real site plus a Hugo build - that script is the one place
+// the real corpus is used on purpose. Everything in this file is side-effect free.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
 import { readDocument, saveDocument } from '../src/frontmatter/index.js';
+import { FIXTURE_CONTENT, FIXTURE_SITE, REAL_SITE, makeFixtureSandbox } from './fixtures/harness.js';
 import { createDocumentService } from '../src/site/documentService.js';
 import { PathGuard } from '../src/site/paths.js';
 import { saveSafely } from '../src/site/safeWrite.js';
 
 const EDITOR_ROOT = join(import.meta.dirname, '..');
-const SITE_ROOT = '/projects/site';
-const CONTENT_ROOT = join(SITE_ROOT, 'content');
+const SITE_ROOT = FIXTURE_SITE;
+const CONTENT_ROOT = FIXTURE_CONTENT;
 const SECTION = 'post';
 
 function walk(dir, out = []) {
@@ -48,22 +50,19 @@ const READ_ONLY = ALL_MARKDOWN.filter((file) => !WRITABLE.includes(file));
 const REAL_TREE_BEFORE = treeHashes(CONTENT_ROOT);
 
 function makeSandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'hve-accept-'));
-  const contentRoot = join(root, 'content');
-  cpSync(CONTENT_ROOT, contentRoot, { recursive: true });
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return { contentRoot, backupRoot: join(root, 'backups') };
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-accept-' });
+  return { siteRoot: sandbox.siteRoot, contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot };
 }
 
 test('the corpus is the size Phase 1 was specified against', () => {
-  // The real tree, deliberately: the site gained an article when it was written through the
-  // editor, and these counts exist to notice that a type silently disappeared.
-  assert.equal(ALL_MARKDOWN.length, 51);
-  assert.equal(WRITABLE.length, 27);
-  assert.equal(READ_ONLY.length, 24);
+  // The counts exist to notice that a document silently disappeared from a section the sweep
+  // is supposed to cover: 20 documents, 9 of them in the writable section.
+  assert.equal(ALL_MARKDOWN.length, 20);
+  assert.equal(WRITABLE.length, 9);
+  assert.equal(READ_ONLY.length, 11);
 });
 
-test('every real Markdown file round-trips through the front matter engine byte-identically', () => {
+test('every Markdown file in the fixture round-trips through the front matter engine byte-identically', () => {
   const broken = [];
   for (const file of ALL_MARKDOWN) {
     const text = readFileSync(file, 'utf8');
@@ -78,7 +77,7 @@ test('a no-op save is a true no-op for every writable document', (t) => {
   const sandbox = makeSandbox(t);
   const service = createDocumentService({
     contentRoot: sandbox.contentRoot,
-    siteRoot: SITE_ROOT,
+    siteRoot: sandbox.siteRoot,
     section: SECTION,
     backupRoot: sandbox.backupRoot,
   });
@@ -117,16 +116,18 @@ test('every read-only document is refused by SafeWriter', (t) => {
   assert.equal(existsSync(sandbox.backupRoot), false);
 });
 
-test('the real content tree is untouched by the whole suite', () => {
+test('the fixture content tree is untouched by the whole suite', () => {
   const after = treeHashes(CONTENT_ROOT);
   assert.deepEqual([...after.entries()].sort(), [...REAL_TREE_BEFORE.entries()].sort());
 });
 
 test('the editor build and its backups live outside the site', () => {
-  assert.ok(!join(EDITOR_ROOT, 'dist').startsWith(`${SITE_ROOT}/`), 'editor dist must not be inside site/');
+  // The one deliberate look at the real site: whatever the tests do, the editor's own files
+  // must never be installed inside the site Hugo builds.
+  assert.ok(!join(EDITOR_ROOT, 'dist').startsWith(`${REAL_SITE}/`), 'editor dist must not be inside site/');
 
-  const named = walk(SITE_ROOT).filter(
-    (file) => /editor/i.test(relative(SITE_ROOT, file)) && !relative(SITE_ROOT, file).startsWith('themes/'),
+  const named = walk(REAL_SITE).filter(
+    (file) => /editor/i.test(relative(REAL_SITE, file)) && !relative(REAL_SITE, file).startsWith('themes/'),
   );
   assert.deepEqual(named, []);
 });

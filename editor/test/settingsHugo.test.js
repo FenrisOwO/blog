@@ -1,12 +1,11 @@
 // Phase 5 acceptance, in one file: change settings, rebuild with real Hugo, and check the
 // published site actually changed - the only proof that a settings edit means anything.
 //
-// This runs against a temporary copy of the whole site, so it can apply real changes (a new
-// social link, a dropped widget, a language override, a theme default being overridden) and
-// then assert the rendered HTML. The real site is only ever read here; acceptance T13/T14 do
-// the same thing against the real site and restore it afterwards.
+// This runs against a temporary copy of the fixture corpus plus the installed theme, so it can
+// apply real changes (a new social link, a dropped widget, a language override, a theme default
+// being overridden) and then assert the rendered HTML. The corpus is only ever read.
 
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,23 +15,75 @@ import test from 'node:test';
 import { createBuildService } from '../src/build/buildService.js';
 import { createSettingsService } from '../src/settings/settingsService.js';
 import { readToml } from '../src/settings/toml/index.js';
+import { FIXTURE_SITE, INSTALLED_THEME } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
 const CONFIG_FILES = ['hugo.toml', 'languages.toml', 'markup.toml', 'menu.toml', 'params.toml', 'related.toml'];
 
 const sha = (text) => createHash('sha256').update(text, 'utf8').digest('hex');
+
+// The corpus declares no site-level sidebar subtitle and an empty homepage widget list; this
+// test renders both, so it declares them in its own copy (test/fixtures/README.md: a test
+// writes what only it needs). It also needs a ja language layer to prove overrides do not leak.
+function seedConfig(configRoot) {
+  const paramsPath = join(configRoot, 'params.toml');
+  const params = readFileSync(paramsPath, 'utf8').replace(
+    '[sidebar]\n    emoji = "🧪"\n',
+    '[sidebar]\n    emoji    = "🧪"\n    subtitle = "Fixture subtitle."\n',
+  );
+  writeFileSync(
+    paramsPath,
+    `${params}\n# GDPR Cookie Consent Configuration\n[widgets]\n    homepage = [\n        { type = "search" },\n        { type = "archives", params = { limit = 5 } },\n        { type = "categories", params = { limit = 10 } },\n        { type = "tag-cloud", params = { limit = 10 } },\n    ]\n    page     = [{ type = "toc" }]\n`,
+  );
+  const languagesPath = join(configRoot, 'languages.toml');
+  writeFileSync(
+    languagesPath,
+    `${readFileSync(languagesPath, 'utf8')}\n[ja]\n    label  = "日本語"\n    locale = "ja-JP"\n    title  = "Fixture Site JA"\n    weight = 3\n`,
+  );
+  // The corpus leaves `noClasses` at Hugo's default (true = inline styles); with classes off
+  // there is no `lntable` element to assert on, so the sandbox turns them on.
+  const markupPath = join(configRoot, 'markup.toml');
+  writeFileSync(
+    markupPath,
+    readFileSync(markupPath, 'utf8').replace('[highlight]\n', '[highlight]\n    noClasses          = false\n    lineNoStart        = 1\n'),
+  );
+}
+
+// The same repair the build tests use: a stub for the corpus's own shortcode and related
+// indices off (its stamp-sized JPEGs defeat the theme's related-content tiles).
+function makeBuildable(siteRoot) {
+  mkdirSync(join(siteRoot, 'layouts', '_shortcodes'), { recursive: true });
+  writeFileSync(join(siteRoot, 'layouts', '_shortcodes', 'admonition.html'), '{{ .Inner }}\n');
+  writeFileSync(
+    join(siteRoot, 'config', '_default', 'related.toml'),
+    'includeNewer = true\nthreshold    = 100\ntoLower      = false\nindices      = []\n',
+  );
+}
+
+// The theme's search and archives widgets only render when the site has a page with the
+// matching layout; the corpus has none, so this test seeds both.
+function seedWidgetPages(siteRoot) {
+  for (const [section, layout] of [['search', 'search'], ['archives', 'archives']]) {
+    const dir = join(siteRoot, 'content', 'page', section);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'index.md'), `---\ntitle: ${layout}\nlayout: "${layout}"\n---\n`);
+  }
+}
 
 test('a settings change survives a real Hugo build into the public output', async (t) => {
   const root = mkdtempSync(join(tmpdir(), 'hve-settings-hugo-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const siteRoot = join(root, 'site');
-  cpSync(SITE_ROOT, siteRoot, {
+  cpSync(FIXTURE_SITE, siteRoot, {
     recursive: true,
     filter: (source) => !/(\/public|\/resources|\/\.hugo_build\.lock)$/.test(source),
   });
+  cpSync(INSTALLED_THEME, join(siteRoot, 'themes', 'hugo-theme-stack'), { recursive: true });
+  makeBuildable(siteRoot);
+  seedWidgetPages(siteRoot);
 
   const configRoot = join(siteRoot, 'config', '_default');
+  seedConfig(configRoot);
   const backupRoot = join(root, 'backups');
   const buildService = createBuildService({
     siteRoot,
@@ -69,13 +120,26 @@ test('a settings change survives a real Hugo build into the public output', asyn
       .replace(/"/g, '&#34;')
       .replace(/'/g, '&#39;');
 
-  const zhSubtitle = at('sidebar.subtitle', '') || languageConfig['zh.params.sidebar.subtitle'];
+  const zhSubtitle = languageConfig['zh.params.sidebar.subtitle'] ?? at('sidebar.subtitle', '');
   const zhTitle = languageConfig['zh.title'] ?? hugoConfig.title;
   const jaTitle = languageConfig['ja.title'] ?? hugoConfig.title;
   const enTitle = languageConfig['en.title'] ?? hugoConfig.title;
   const colorSchemeBefore = at('colorScheme.default', themeConfig['colorScheme.default']);
   const sinceBefore = paramsConfig['footer.since'];
   const firstSocialUrl = configOf('menu.toml')['social[0].url'];
+
+  // The page the line-number assertions read is written here rather than borrowed from the
+  // theme's demo posts: the user is free to delete or draft those, and a settings test that
+  // dies with ENOENT because of that is testing the demo content, not the setting.
+  const codePost = join(siteRoot, 'content', 'post', 'line-numbers-sample');
+  mkdirSync(codePost, { recursive: true });
+  writeFileSync(
+    join(codePost, 'index.md'),
+    '---\ntitle: 行号样例\nslug: line-numbers-sample\ndate: 2026-01-01\n---\n\n```js\nconst answer = 42;\n```\n',
+    'utf8',
+  );
+  const codePostOutput = 'p/line-numbers-sample/index.html';
+  const codeCompareFile = join(codePost, 'index.md');
 
   // -- before ---------------------------------------------------------------
   const first = await buildService.build({ trigger: 'manual' });
@@ -98,13 +162,13 @@ test('a settings change survives a real Hugo build into the public output', asyn
   assert.match(readPublic('index.html'), /class="search-form widget"/, 'homepage search widget');
   assert.match(readPublic('index.html'), new RegExp(`<ol class="menu-social">[\\s\\S]*${escape(firstSocialUrl)}`));
   assert.doesNotMatch(readPublic('index.html'), /mastodon\.social/);
-  assert.match(readPublic('p/image-gallery/index.html'), /lntable/, 'code line numbers');
+  assert.match(readPublic(codePostOutput), /lntable/, 'code line numbers');
   assert.match(readPublic('index.html'), new RegExp(`<title>${escape(escapeHtml(zhTitle))}`));
   assert.match(readPublic('en/index.html'), new RegExp(`<title>${escape(escapeHtml(enTitle))}`));
 
   const beforeParams = readFileSync(join(configRoot, 'params.toml'), 'utf8');
   const beforeRelated = readFileSync(join(configRoot, 'related.toml'), 'utf8');
-  const beforeContent = readFileSync(join(siteRoot, 'content', 'post', 'Image Gallery', 'index.md'), 'utf8');
+  const beforeContent = readFileSync(codeCompareFile, 'utf8');
   assert.equal(
     describe().settings['params.colorScheme.default'].source,
     paramsConfig['colorScheme.default'] === undefined ? 'theme' : 'site',
@@ -148,7 +212,7 @@ test('a settings change survives a real Hugo build into the public output', asyn
   assert.equal(readFileSync(join(configRoot, 'related.toml'), 'utf8'), beforeRelated);
   assert.equal(sha(readFileSync(join(configRoot, 'params.toml'), 'utf8')) === sha(beforeParams), false);
   assert.match(readFileSync(join(configRoot, 'params.toml'), 'utf8'), /# GDPR Cookie Consent Configuration/);
-  assert.equal(readFileSync(join(siteRoot, 'content', 'post', 'Image Gallery', 'index.md'), 'utf8'), beforeContent);
+  assert.equal(readFileSync(codeCompareFile, 'utf8'), beforeContent);
 
   // -- after ----------------------------------------------------------------
   const second = await buildService.build({ trigger: 'manual' });
@@ -173,6 +237,6 @@ test('a settings change survives a real Hugo build into the public output', asyn
   assert.equal(describe().settings['hugo.title'].value, 'Changed Site Title');
   assert.equal(describe().settings['hugo.title'].languageRows.find((row) => row.code === 'en').value, 'Changed EN Title');
   assert.match(readPublic('ja/index.html'), /<h2 class="site-description">こんにちは、世界<\/h2>/, 'the ja override');
-  assert.doesNotMatch(readPublic('p/image-gallery/index.html'), /lntable/, 'line numbers are off now');
-  assert.equal(existsSync(join(root, 'public', 'p', 'image-gallery', 'index.html')), true);
+  assert.doesNotMatch(readPublic(codePostOutput), /lntable/, 'line numbers are off now');
+  assert.equal(existsSync(join(root, 'public', codePostOutput)), true);
 });

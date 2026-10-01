@@ -3,7 +3,7 @@
 // Most of this file tests the scheduling contract (one build at a time, bursts coalesced,
 // debounce honoured) with a scripted runner, because that contract is what stops a save
 // plus its watcher echo from building the site twice. The last test is a real Hugo build
-// of the real site - slow on purpose, and the only place the two are wired together.
+// of the fixture corpus - slow on purpose, and the only place the two are wired together.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,8 +12,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { createBuildService } from '../src/build/buildService.js';
+import { FIXTURE_SITE, makeFixtureSandbox } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
+// Read-only tests point at the corpus itself; the real build gets a writable copy.
+const SITE_ROOT = FIXTURE_SITE;
 
 function okResult(extra = {}) {
   return {
@@ -239,12 +241,31 @@ test('subscribers are notified across the build lifecycle', async (t) => {
   assert.equal(seen[seen.length - 1], 'success');
 });
 
-test('a real Hugo build of the real site publishes a real site', async (t) => {
-  const root = mkdtempSync(join(tmpdir(), 'hve-realbuild-'));
+// The corpus is not, on its own, buildable by this theme: it carries one custom shortcode
+// (`admonition`) the theme does not define, and its stamp-sized JPEGs make the theme's
+// related-content tiles ask Go for image colors it cannot compute. A real build therefore
+// gets a site-local stub for the shortcode and related indices turned off - both written
+// into the sandbox copy, never into the corpus.
+function makeBuildable(siteRoot) {
+  mkdirSync(join(siteRoot, 'layouts', '_shortcodes'), { recursive: true });
+  writeFileSync(join(siteRoot, 'layouts', '_shortcodes', 'admonition.html'), '{{ .Inner }}\n');
+  writeFileSync(
+    join(siteRoot, 'config', '_default', 'related.toml'),
+    'includeNewer = true\nthreshold    = 100\ntoLower      = false\nindices      = []\n',
+  );
+}
+
+test('a real Hugo build of the fixture site publishes a real site', async (t) => {
+  // theme: true because the build needs the installed hugo-theme-stack, not the corpus's
+  // (absent) themes/ directory.
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-realbuild-', theme: true });
+  makeBuildable(sandbox.siteRoot);
+
+  const root = mkdtempSync(join(tmpdir(), 'hve-realbuild-out-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
 
   const service = createBuildService({
-    siteRoot: SITE_ROOT,
+    siteRoot: sandbox.siteRoot,
     stagingDir: join(root, 'staging'),
     cacheDir: join(root, 'cache'),
     publishDir: join(root, 'public'),
@@ -257,6 +278,8 @@ test('a real Hugo build of the real site publishes a real site', async (t) => {
   assert.equal(record.state, 'success', record.message);
   assert.equal(record.exitCode, 0);
   assert.equal(record.timedOut, false);
+  // The corpus has 19 published documents across zh/en plus the theme's own pages, assets
+  // and aliases; a full build clears 100 files (measured 107).
   assert.ok(record.published.files > 100, `expected a full site, published ${record.published?.files}`);
   assert.equal(record.errorCount, 0);
   assert.ok(existsSync(join(root, 'public', 'index.html')));

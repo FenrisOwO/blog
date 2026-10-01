@@ -97,7 +97,7 @@ export const SETTINGS = [
   },
   { id: 'hugo.hasCJKLanguage', group: 'general', file: 'hugo.toml', path: 'hasCJKLanguage', type: 'boolean', label: 'CJK 语言', help: '影响 .Summary 与 .WordCount 对中日韩文本的切分。' },
   { id: 'hugo.pagination.pagerSize', group: 'general', file: 'hugo.toml', path: 'pagination.pagerSize', type: 'number', min: 1, max: 100, label: '每页文章数', help: '列表分页大小。' },
-  { id: 'hugo.services.disqus.shortname', group: 'general', file: 'hugo.toml', path: 'services.disqus.shortname', type: 'text', label: 'Disqus 短名', help: '评论提供方选择 disqus 时使用。' },
+  { id: 'hugo.services.disqus.shortname', group: 'general', file: 'hugo.toml', path: 'services.disqus.shortname', type: 'text', label: 'Disqus 短名', help: '评论提供方选择 disqus 时使用；`hugo-theme-stack` 是主题自带的演示短名，换成你自己的短名才会加载你的评论。' },
   { id: 'params.favicon', group: 'appearance', file: 'params.toml', path: 'favicon', type: 'text', label: '站点图标', help: '相对 static/ 或 assets/ 的图片路径。' },
 
   // -- params.toml (appearance) ------------------------------------------------------
@@ -133,8 +133,8 @@ export const SETTINGS = [
   { id: 'params.article.license.default', group: 'appearance', file: 'params.toml', path: 'article.license.default', type: 'text', label: '默认许可文本', help: '支持 Markdown。' },
   { id: 'params.article.readingTime', group: 'appearance', file: 'params.toml', path: 'article.readingTime', type: 'boolean', label: '显示阅读时长', themeDefault: true },
   { id: 'params.article.toc', group: 'appearance', file: 'params.toml', path: 'article.toc', type: 'boolean', label: '显示文章目录', themeDefault: true },
-  { id: 'params.comments.enabled', group: 'appearance', file: 'params.toml', path: 'comments.enabled', type: 'boolean', label: '启用评论' },
-  { id: 'params.comments.provider', group: 'appearance', file: 'params.toml', path: 'comments.provider', type: 'select', optionsFrom: 'commentProviders', label: '评论提供方', help: '可选项来自主题支持的后端；选择 disqus 时还需要 hugo.toml 的短名。' },
+  { id: 'params.comments.enabled', group: 'appearance', file: 'params.toml', path: 'comments.enabled', type: 'boolean', label: '启用评论', help: '文章底部是否显示评论区。本站是静态页面：本地预览时 Disqus 只会用一句占位文字替换评论区，所以本站现在关掉了它；部署到真实域名后再打开。' },
+  { id: 'params.comments.provider', group: 'appearance', file: 'params.toml', path: 'comments.provider', type: 'select', optionsFrom: 'commentProviders', label: '评论提供方', help: '可选项来自主题支持的后端；选择 disqus 时还需要 hugo.toml 的短名。Disqus 拒绝在 localhost 上加载，因此本地预览只会看到占位文字。' },
   { id: 'params.cookies.enabled', group: 'appearance', file: 'params.toml', path: 'cookies.enabled', type: 'boolean', label: 'Cookie 同意提示', help: '启用后分析类与功能类 Cookie 需要用户同意。' },
   { id: 'params.widgets.homepage', group: 'appearance', file: 'params.toml', path: 'widgets.homepage', type: 'widgets', label: '首页侧栏组件', help: '组件类型来自主题里存在的 widget 模板。' },
   { id: 'params.widgets.page', group: 'appearance', file: 'params.toml', path: 'widgets.page', type: 'widgets', label: '文章页侧栏组件' },
@@ -166,7 +166,7 @@ export const SETTINGS = [
     type: 'menu-list',
     arrayPath: 'social',
     label: '社交菜单',
-    help: '每条对应一个 [[social]]；图标名来自主题的 icons（如 brand-github）。',
+    help: '每条对应一个 [[social]]；图标名来自主题的 icons（如 brand-github），也可以填 phosphor-<名字> 用 Phosphor 图标，或从图片里选一张（保存时会安装到 assets/icons/）。',
     fields: [
       { key: 'identifier', label: '标识', type: 'text', required: true },
       { key: 'name', label: '名称', type: 'text', required: true },

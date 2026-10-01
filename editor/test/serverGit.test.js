@@ -202,3 +202,60 @@ test('a site that is not a repository reports it instead of failing', async () =
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('the status route splits staged from unstaged, and the diff route answers for either half', async () => {
+  await withRepo(async ({ root, repoRoot, getJson }) => {
+    writeFileSync(join(root, 'content', 'post', 'a.md'), '---\ntitle: A\n---\n\nstaged line\n');
+    git(repoRoot, ['add', '--', 'site/content/post/a.md']);
+
+    const status = await getJson('/api/git/status');
+    const change = status.body.changes.find((entry) => entry.path === 'content/post/a.md');
+    assert.equal(change.staged, true);
+    assert.equal(change.unstaged, false);
+    assert.equal(status.body.counts.staged, 1);
+    assert.equal(status.body.counts.unstaged, 0);
+
+    // The worktree has nothing left to show for this file; the index does. The UI needs both
+    // routes to answer honestly rather than opening an empty page.
+    const worktree = await getJson('/api/git/diff?path=' + encodeURIComponent('content/post/a.md'));
+    assert.equal(worktree.status, 200);
+    assert.equal(worktree.body.text.trim(), '');
+
+    const cached = await getJson('/api/git/diff?path=' + encodeURIComponent('content/post/a.md') + '&staged=true');
+    assert.equal(cached.status, 200);
+    assert.equal(cached.body.staged, true);
+    assert.match(cached.body.text, /staged line/);
+  });
+});
+
+test('a history entry is readable as one patch, and news about files outside the site is kept honest', async () => {
+  await withRepo(async ({ root, getJson, postJson }) => {
+    writeFileSync(join(root, 'content', 'post', 'a.md'), '---\ntitle: A\n---\n\nfirst line\n');
+    writeFileSync(join(root, 'content', 'post', 'b.md'), '---\ntitle: B\n---\n\n');
+    const committed = await postJson('/api/git/commit', {
+      message: 'Add a and b',
+      paths: ['content/post/a.md', 'content/post/b.md'],
+      confirm: true,
+    });
+    assert.equal(committed.status, 200);
+
+    const shown = await getJson(`/api/git/show?sha=${committed.body.sha}`);
+    assert.equal(shown.status, 200);
+    assert.match(shown.body.text, /^\+first line$/m, 'a history row has to carry its own diff');
+    assert.deepEqual(shown.body.files.map((file) => file.path).sort(), [
+      'content/post/a.md',
+      'content/post/b.md',
+    ]);
+    assert.equal(shown.body.files.every((file) => file.outside === false), true);
+
+    const narrowed = await getJson(
+      `/api/git/show?sha=${committed.body.sha}&path=${encodeURIComponent('content/post/a.md')}`,
+    );
+    assert.match(narrowed.body.text, /^\+first line$/m);
+    assert.doesNotMatch(narrowed.body.text, /content\/post\/b\.md/);
+
+    const unknown = await getJson('/api/git/show?sha=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
+    assert.equal(unknown.status, 409);
+  });
+});
+

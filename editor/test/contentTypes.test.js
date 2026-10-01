@@ -3,39 +3,38 @@
 //
 // The point of Phase 4 is that a Page and a Category are not "the rest" of the editor: they
 // are found, classified, edited, created, deleted and restored by the same rules as an
-// Article. So each test below walks one whole sentence of that promise, on a sandbox copy of
-// the real content tree, and checks the bytes on disk rather than a summary of them.
+// Article. So each test below walks one whole sentence of that promise, on a copy of the
+// fixture corpus (test/fixtures/README.md), and checks the bytes on disk rather than a summary
+// of them.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { createDocumentService } from '../src/site/documentService.js';
 import { contentKindLabel, formLabel, formatUpdated, titleOf } from '../web/contentLabels.js';
+import { FIXTURE, makeFixtureSandbox } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
-const REAL_CONTENT = join(SITE_ROOT, 'content');
+const ABOUT = FIXTURE.page;
+const ABOUT_EN = FIXTURE.pageEn;
+const LINKS = FIXTURE.links;
+const CATEGORY = FIXTURE.category;
+const POST = FIXTURE.article;
 
-const ABOUT = 'page/about/index.md';
-const ABOUT_JA = 'page/about/index.ja.md';
-const LINKS = 'page/links/index.md';
-const CATEGORY = 'categories/Documentation/_index.md';
-const POST = 'post/pagination-test-01.en.md';
+// The fixture category has two languages; the tests below compare "the other language" against
+// the one they edited instead of listing a whole language set.
+const CATEGORY_OTHER_LANGUAGES = [FIXTURE.categoryEn];
+const ABOUT_OTHER_LANGUAGES = [ABOUT];
 
 function makeSandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'hve-p4-'));
-  const contentRoot = join(root, 'content');
-  cpSync(REAL_CONTENT, contentRoot, { recursive: true });
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return { root, contentRoot, backupRoot: join(root, 'backups') };
+  return makeFixtureSandbox(t, { prefix: 'hve-p4-' });
 }
 
 function makeService(sandbox) {
   return createDocumentService({
     contentRoot: sandbox.contentRoot,
-    siteRoot: SITE_ROOT,
+    siteRoot: sandbox.siteRoot,
     sections: [''],
     backupRoot: sandbox.backupRoot,
   });
@@ -52,7 +51,9 @@ test('the site has all four types, and each row knows which one it is', async (t
 
   const counts = {};
   for (const doc of documents) counts[doc.contentKind] = (counts[doc.contentKind] ?? 0) + 1;
-  assert.deepEqual(counts, { article: 27, page: 16, category: 4, other: 4 });
+  // The fixture's own shape: 9 articles, 5 pages, 3 taxonomy term pages (2 category + 1 tag)
+  // and 3 "other" files (the two home pages and misc/fixture-note.md).
+  assert.deepEqual(counts, { article: 9, page: 5, category: 3, other: 3 });
 
   // Bundle forms are a separate axis: an article can be a file or a bundle, and so can a page.
   const byPath = new Map(documents.map((doc) => [doc.path, doc]));
@@ -150,19 +151,21 @@ test('a category page is edited in place, and only the language that was edited 
   const sandbox = makeSandbox(t);
   const service = makeService(sandbox);
 
-  const beforeOthers = ['_index.en.md', '_index.ja.md', '_index.zh-hant-tw.md'].map((name) =>
-    disk(sandbox, `categories/Documentation/${name}`),
-  );
+  const beforeOthers = CATEGORY_OTHER_LANGUAGES.map((path) => disk(sandbox, path));
+
+  // What the file says, not what a calendar of demo content said: the form must report it back.
+  const title = disk(sandbox, CATEGORY).match(/^title: (.+)$/m)[1];
+  const image = disk(sandbox, CATEGORY).match(/^image: (.+)$/m)[1];
 
   const opened = service.read(CATEGORY);
   assert.equal(opened.doc.contentKind, 'category');
   assert.equal(opened.doc.kind, 'branch-bundle');
-  assert.match(opened.text, /^---\ntitle: 文档\n/);
+  assert.match(opened.text, new RegExp(`^---\ntitle: ${title}\n`));
 
   const form = service.fields(CATEGORY);
   assert.equal(form.contentKind, 'category');
-  assert.equal(form.fields.find((field) => field.path === 'title').value, '文档');
-  assert.equal(form.fields.find((field) => field.path === 'image').value, 'hutomo-abrianto-l2jk-uxb1BY-unsplash.jpg');
+  assert.equal(form.fields.find((field) => field.path === 'title').value, title);
+  assert.equal(form.fields.find((field) => field.path === 'image').value, image);
   // A nested map the form cannot flatten is still reported, never silently dropped.
   assert.equal(form.fields.find((field) => field.path === 'style').editable, false);
 
@@ -174,13 +177,11 @@ test('a category page is edited in place, and only the language that was edited 
   assert.equal(noop.status, 'noop');
 
   // Editing one language of a term page is editing one file.
-  const others = ['_index.en.md', '_index.ja.md', '_index.zh-hant-tw.md'].map((name) =>
-    disk(sandbox, `categories/Documentation/${name}`),
-  );
+  const others = CATEGORY_OTHER_LANGUAGES.map((path) => disk(sandbox, path));
   assert.deepEqual(others, beforeOthers);
   assert.deepEqual(
-    ['en', 'ja', 'zh', 'zh-hant-tw'].sort(),
-    [...(await service.contentOverview()).groups.find((group) => group.translationKey === 'categories/Documentation/_index').languages].sort(),
+    ['en', 'zh'].sort(),
+    [...(await service.contentOverview()).groups.find((group) => group.translationKey === 'categories/fixture-category/_index').languages].sort(),
   );
 });
 
@@ -194,7 +195,7 @@ test('a category page can be created, then deleted and restored as one entry', a
 
   // The new term page is part of the type's count straight away.
   const overview = await service.contentOverview();
-  assert.equal(overview.documents.filter((doc) => doc.contentKind === 'category').length, 5);
+  assert.equal(overview.documents.filter((doc) => doc.contentKind === 'category').length, 4);
 
   service.saveFields({
     path: 'categories/release-notes/_index.md',
@@ -219,31 +220,29 @@ test('one language of a page is edited and deleted without touching its siblings
   const sandbox = makeSandbox(t);
   const service = makeService(sandbox);
 
-  const siblings = ['index.en.md', 'index.md', 'index.zh-hant-tw.md'].map((name) =>
-    disk(sandbox, `page/about/${name}`),
-  );
+  const siblings = ABOUT_OTHER_LANGUAGES.map((path) => disk(sandbox, path));
 
-  const opened = service.read(ABOUT_JA);
-  assert.equal(opened.doc.language, 'ja');
+  const opened = service.read(ABOUT_EN);
+  assert.equal(opened.doc.language, 'en');
   assert.equal(opened.doc.contentKind, 'page');
 
-  service.saveEdit({ path: ABOUT_JA, text: `${opened.text}\n追記。\n` });
-  assert.match(disk(sandbox, ABOUT_JA), /追記。/);
+  service.saveEdit({ path: ABOUT_EN, text: `${opened.text}\n追記。\n` });
+  assert.match(disk(sandbox, ABOUT_EN), /追記。/);
 
-  const after = ['index.en.md', 'index.md', 'index.zh-hant-tw.md'].map((name) => disk(sandbox, `page/about/${name}`));
-  assert.deepEqual(after, siblings, 'editing Japanese left the other languages byte for byte');
+  const after = ABOUT_OTHER_LANGUAGES.map((path) => disk(sandbox, path));
+  assert.deepEqual(after, siblings, 'editing the English page left the other language byte for byte');
 
   // Deleting that one language leaves the page itself in place.
-  const plan = service.planForDelete({ path: ABOUT_JA, scope: 'document' });
+  const plan = service.planForDelete({ path: ABOUT_EN, scope: 'document' });
   assert.equal(plan.scope, 'document');
   assert.ok(plan.warnings.some((warning) => warning.includes('会保留')));
 
-  const removed = service.removeDocument({ path: ABOUT_JA, scope: 'document' });
-  assert.equal(existsSync(join(sandbox.contentRoot, ABOUT_JA)), false);
+  const removed = service.removeDocument({ path: ABOUT_EN, scope: 'document' });
+  assert.equal(existsSync(join(sandbox.contentRoot, ABOUT_EN)), false);
   assert.equal(existsSync(join(sandbox.contentRoot, ABOUT)), true);
 
   service.restore({ id: removed.trashId });
-  assert.match(disk(sandbox, ABOUT_JA), /追記。/);
+  assert.match(disk(sandbox, ABOUT_EN), /追記。/);
 });
 
 test('the pages a deletion does not own are the pages it does not move', async (t) => {
@@ -256,12 +255,12 @@ test('the pages a deletion does not own are the pages it does not move', async (
 
   assert.equal(existsSync(join(sandbox.contentRoot, 'page/links')), false);
   assert.equal(disk(sandbox, ABOUT), beforeAbout, 'the neighbouring page was never involved');
-  assert.equal(existsSync(join(sandbox.contentRoot, 'page/links/ts-logo-128.jpg')), false, 'its own resource went with it');
-  assert.equal(existsSync(join(sandbox.contentRoot, 'post/pagination-test-01.en.md')), true);
+  assert.equal(existsSync(join(sandbox.contentRoot, FIXTURE.linksResource)), false, 'its own resource went with it');
+  assert.equal(existsSync(join(sandbox.contentRoot, POST)), true);
 
   service.restore({ id: removed.trashId });
-  assert.equal(disk(sandbox, LINKS).includes('title: "链接"'), true);
-  assert.equal(existsSync(join(sandbox.contentRoot, 'page/links/ts-logo-128.jpg')), true);
+  assert.equal(disk(sandbox, LINKS).includes(`title: ${disk(sandbox, LINKS).match(/^title: (.+)$/m)[1]}`), true);
+  assert.equal(existsSync(join(sandbox.contentRoot, FIXTURE.linksResource)), true);
 });
 
 test('every row can be named in the list, including the ones with no title', () => {

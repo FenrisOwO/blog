@@ -16,6 +16,8 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { compileScript, compileTemplate, parse } from '@vue/compiler-sfc';
+
 const ROOT = join(import.meta.dirname, '..');
 const WEB = join(ROOT, 'web');
 const COMPONENTS = join(WEB, 'components');
@@ -153,6 +155,32 @@ test('the shell navigation is data and the active entry is marked for assistive 
   assert.match(selector, /<span class="body">/, 'the shared row body carries title and meta');
 });
 
+test('the two long pages keep their own layout', () => {
+  // Two regressions the shell rewrite introduced, both reported from the running editor:
+  //
+  // * `.view-body.flush` is a column, so the settings page stacked its nav above the form and
+  //   the settings themselves started below the fold. The page has to state the direction.
+  const settings = components.find((entry) => entry.name === 'SettingsPanel.vue').source;
+  assert.match(
+    styleBlock(settings),
+    /\.settings-body\s*\{[^}]*flex-direction:\s*row/,
+    'the settings page must lay the group/file nav and the form out in a row',
+  );
+
+  // * the relations page lost its two columns: the body was a plain block, so the tag list ran
+  //   across the whole window and the detail sat under it. A tag is also one line, not the
+  //   shared two-line row (title line + languages line), which doubled a long list.
+  const relations = components.find((entry) => entry.name === 'RelationsPanel.vue').source;
+  assert.match(
+    styleBlock(relations),
+    /\.relations-body\s*\{[^}]*grid-template-columns:/,
+    'the relations page must keep its list and its detail side by side',
+  );
+  const tagList = between(relations, '<li v-for="tag in visibleTags"', '</ul>');
+  assert.match(tagList, /class="list-item selectable tag-row"/, 'a tag row is the compact single-line row');
+  assert.doesNotMatch(tagList, /class="meta"/, 'a tag row must not grow a second line again');
+});
+
 test('the command palette is a view of the same actions, icons included', () => {
   const commands = readFileSync(join(WEB, 'commands.js'), 'utf8');
   assert.match(commands, /icon: options\.icon \?\? iconFor\(id\)/, 'every command carries an icon');
@@ -181,4 +209,25 @@ test('the responsive rules keep the view structure usable', () => {
   }
   const media = [...baseCss.matchAll(/@media[^{]+\{/g)].map((match) => match[0]);
   assert.ok(media.length >= 2, 'the design system covers more than one breakpoint');
+});
+
+test('every .vue file compiles, with the same compiler vite builds it with', () => {
+  // A component that reads correctly can still fail to build: extracting a decision into a module
+  // and leaving the local copy behind is a duplicate declaration that only the build notices.
+  // Compiling here turns that into a test failure instead of a broken `editor/dist`.
+  for (const { name, source } of [...components, { name: 'App.vue', source: appSource }]) {
+    const { descriptor, errors } = parse(source, { filename: name });
+    assert.deepEqual(errors, [], `${name} parses as a single-file component`);
+
+    try {
+      compileScript(descriptor, { id: name });
+    } catch (cause) {
+      assert.fail(`${name} script does not compile: ${cause.message}`);
+    }
+
+    const template = descriptor.template
+      ? compileTemplate({ source: descriptor.template.content, filename: name, id: name })
+      : { errors: [] };
+    assert.deepEqual(template.errors, [], `${name} template compiles`);
+  }
 });

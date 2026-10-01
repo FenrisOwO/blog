@@ -43,3 +43,6 @@ Thumbs.db
 *.log
 *.swp
 *~
+
+# --- editor generated output ---
+editor/public/

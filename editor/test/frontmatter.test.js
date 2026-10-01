@@ -1,7 +1,8 @@
 // P1.1 acceptance tests.
 //
-// The corpus is the project's real content tree, so "no-op save is byte-identical"
-// is measured against files that were not authored by this editor.
+// The corpus is the fixture site (test/fixtures/README.md), which no editor wrote by hand and
+// which the tests own, so "no-op save is byte-identical" is measured on documents the test
+// suite controls.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,8 +10,9 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { splitDocument, readDocument, saveDocument } from '../src/frontmatter/index.js';
+import { FIXTURE, FIXTURE_CONTENT } from './fixtures/harness.js';
 
-const CONTENT_ROOT = process.env.HUGO_CONTENT_ROOT ?? '/projects/site/content';
+const CONTENT_ROOT = FIXTURE_CONTENT;
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -22,7 +24,7 @@ function walk(dir, out = []) {
 }
 
 const FILES = walk(CONTENT_ROOT);
-const SAMPLE = FILES.find((file) => file.endsWith('pagination-test-01.en.md'));
+const SAMPLE = join(CONTENT_ROOT, FIXTURE.article);
 
 function changedLines(before, after) {
   const left = before.split('\n');
@@ -34,7 +36,7 @@ function changedLines(before, after) {
 }
 
 test('T1: split -> join is byte-identical for every existing file', () => {
-  assert.ok(FILES.length >= 49, `corpus too small: ${FILES.length}`);
+  assert.ok(FILES.length >= 20, `corpus too small: ${FILES.length}`);
   for (const file of FILES) {
     const text = readFileSync(file, 'utf8');
     const parts = splitDocument(text);
@@ -57,8 +59,9 @@ test('T1b: a no-op save returns the original bytes', () => {
 
 test('T7: saving the same change twice is idempotent', () => {
   const text = readFileSync(SAMPLE, 'utf8');
-  const once = saveDocument(text, { title: 'Pagination Test 01 (edited)' });
-  const twice = saveDocument(once, { title: 'Pagination Test 01 (edited)' });
+  const title = readDocument(text).values.title;
+  const once = saveDocument(text, { title: `${title} (edited)` });
+  const twice = saveDocument(once, { title: `${title} (edited)` });
   assert.equal(twice, once);
 });
 
@@ -66,9 +69,10 @@ test('T2: editing only the title touches exactly one line', () => {
   const text = readFileSync(SAMPLE, 'utf8');
   const next = saveDocument(text, { title: '改过的标题' });
 
+  const slug = readDocument(text).values.slug;
   assert.equal(changedLines(text, next), 1);
   assert.match(next, /title: 改过的标题\n/);
-  assert.match(next, /slug: pagination-test-01\n/);
+  assert.match(next, new RegExp(`slug: ${slug}\\n`), 'the slug line is untouched');
   assert.equal(splitDocument(next).bodyRaw, splitDocument(text).bodyRaw);
   assert.equal(changedLines(splitDocument(text).frontMatterRaw, splitDocument(next).frontMatterRaw), 1);
 });
@@ -106,11 +110,13 @@ test('T2b: unknown keys, nested maps, comments and order are preserved', () => {
 
 test('list fields keep their original indentation and leave siblings alone', () => {
   const text = readFileSync(SAMPLE, 'utf8');
+  const { title, categories } = readDocument(text).values;
   const next = saveDocument(text, { tags: ['pagination', 'test', '新增'] });
 
+  // The fixture article writes its lists with two spaces, and the rewrite keeps that.
   assert.match(next, /tags:\n  - pagination\n  - test\n  - 新增\n/);
-  assert.match(next, /title: Pagination Test 01\n/);
-  assert.match(next, /categories:\n  - Testing\n/);
+  assert.match(next, new RegExp(`title: ${title}\\n`));
+  assert.match(next, new RegExp(`categories:\\n  - ${categories[0]}\\n`));
   assert.equal(splitDocument(next).bodyRaw, splitDocument(text).bodyRaw);
 });
 

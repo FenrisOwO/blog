@@ -4,8 +4,8 @@
 // tests are mostly about what did NOT change: comments, blank lines, ordering, alignment,
 // inline tables, arrays of tables, and files the editor has no opinion about.
 //
-// The real site config is used as the corpus, because that is where the awkward shapes are
-// (aligned `=`, multi-line arrays of inline tables, `[social.params]` inside `[[social]]`).
+// The fixture corpus's own config is used as the corpus, because that is where the awkward
+// shapes are (multi-line arrays of inline tables, `[social.params]` inside `[[social]]`).
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { readSiteLanguages } from '../src/site/contentReader.js';
+import { FIXTURE_SITE } from './fixtures/harness.js';
 import {
   applyAndVerify,
   applyTomlEdits,
@@ -33,13 +34,12 @@ import {
   verifyMinimalRewrite,
 } from '../src/settings/toml/index.js';
 
-const SITE_ROOT = '/projects/site';
-const CONFIG_DIR = join(SITE_ROOT, 'config', '_default');
+const CONFIG_DIR = join(FIXTURE_SITE, 'config', '_default');
 const readConfig = (file) => readFileSync(join(CONFIG_DIR, file), 'utf8');
 
 const CONFIG_FILES = ['hugo.toml', 'params.toml', 'menu.toml', 'languages.toml', 'markup.toml', 'related.toml'];
 
-test('every real config file parses and reads back byte-identical', () => {
+test('every fixture config file parses and reads back byte-identical', () => {
   for (const file of CONFIG_FILES) {
     const text = readConfig(file);
     const doc = readToml(text);
@@ -51,7 +51,7 @@ test('every real config file parses and reads back byte-identical', () => {
   }
 });
 
-test('every value in the real config files decodes', () => {
+test('every value in the fixture config files decodes', () => {
   const undecodable = [];
   for (const file of CONFIG_FILES) {
     for (const leaf of readToml(readConfig(file)).leaves) {
@@ -62,29 +62,36 @@ test('every value in the real config files decodes', () => {
 });
 
 test('scalars, tables and array-of-table entries are addressed the way the API says', () => {
+  // The fixture's params.toml holds one of each shape this test names: a number, a string
+  // and a boolean; the arrays live in related.toml and the arrays-of-tables in menu.toml.
   const params = readToml(readConfig('params.toml'));
   assert.equal(typeof params.values['footer.since'], 'number');
-  assert.ok(params.values['sidebar.subtitle'].length > 0);
-  assert.equal(params.values['article.license.enabled'], true);
-  assert.deepEqual(params.values['mainSections'], ['post']);
+  assert.ok(params.values['sidebar.emoji'].length > 0);
+  assert.equal(params.values['comments.enabled'], false);
+  assert.deepEqual(readToml(readConfig('related.toml')).values['indices'], [
+    { name: 'tags', weight: 100 },
+    { name: 'categories', weight: 200 },
+  ]);
 
   const menu = readToml(readConfig('menu.toml'));
   assert.equal(menu.values['social[0].identifier'], 'github');
-  assert.equal(menu.values['social[1].params.icon'], 'brand-twitter');
+  assert.equal(menu.values['social[1].params.icon'], 'rss');
 
   const languages = readToml(readConfig('languages.toml'));
-  assert.ok(languages.values['zh-hant-tw.params.sidebar.subtitle'].length > 0);
-  assert.equal(languages.values['ja.weight'], 4);
+  assert.ok(languages.values['en.params.sidebar.subtitle'].length > 0);
+  assert.equal(languages.values['en.weight'], 2);
 });
 
 test('types are reported, including arrays and inline tables', () => {
-  const doc = readToml(readConfig('params.toml'));
-  const byPath = new Map(doc.leaves.map((leaf) => [leaf.path, leaf]));
+  const byPath = new Map(readToml(readConfig('params.toml')).leaves.map((leaf) => [leaf.path, leaf]));
   assert.equal(byPath.get('footer.since').type, 'integer');
   assert.equal(byPath.get('rssFullContent').type, 'boolean');
-  assert.equal(byPath.get('favicon').type, 'string');
-  assert.equal(byPath.get('widgets.homepage').type, 'array');
-  assert.deepEqual(byPath.get('widgets.homepage').value[1], { type: 'archives', params: { limit: 5 } });
+  assert.equal(byPath.get('sidebar.emoji').type, 'string');
+
+  // The fixture's only array-of-inline-tables lives in related.toml.
+  const related = new Map(readToml(readConfig('related.toml')).leaves.map((leaf) => [leaf.path, leaf]));
+  assert.equal(related.get('indices').type, 'array');
+  assert.deepEqual(related.get('indices').value[1], { name: 'categories', weight: 200 });
 });
 
 test('decoding covers the value shapes Hugo configs use', () => {
@@ -114,23 +121,28 @@ test('a comment after a value is not part of the value', () => {
   assert.equal(result.text, 'key = "changed" # keep me\n');
 });
 
-test('changing one scalar leaves comments, blank lines, ordering and alignment alone', () => {
+test('changing one scalar leaves blank lines, ordering and the rest of the file alone', () => {
   const text = readConfig('params.toml');
   const before = text.split('\n');
   const parsed = parseToml(text);
-  const result = applyAndVerify(text, [planValueEdit(parsed, 'sidebar.subtitle', 'New subtitle')]);
+  const result = applyAndVerify(text, [planValueEdit(parsed, 'sidebar.emoji', 'New emoji')]);
 
-  assert.equal(readValue(result.text, 'sidebar.subtitle'), 'New subtitle');
+  assert.equal(readValue(result.text, 'sidebar.emoji'), 'New emoji');
   // Exactly one line differs, and it is the line that carries the value.
   const after = result.text.split('\n');
   assert.equal(after.length, before.length);
   const changed = before.filter((line, index) => line !== after[index]);
   assert.equal(changed.length, 1);
-  assert.equal(after.find((line) => line.includes('subtitle =')), '    subtitle = "New subtitle"');
-  // The keys around it keep their own alignment: the emoji line is byte-identical.
-  const emojiLine = before.find((line) => line.trimStart().startsWith('emoji'));
-  assert.ok(emojiLine !== undefined);
-  assert.ok(result.text.split('\n').includes(emojiLine));
+  assert.equal(after.find((line) => line.includes('emoji =')), '    emoji = "New emoji"');
+  // The other keys and the blank lines between tables are byte-identical.
+  const sinceLine = before.find((line) => line.trimStart().startsWith('since'));
+  assert.ok(sinceLine !== undefined);
+  assert.ok(result.text.split('\n').includes(sinceLine));
+  assert.equal(
+    after.filter((line) => line === '').length,
+    before.filter((line) => line === '').length,
+    'the blank lines between tables stay put',
+  );
 });
 
 test('a no-op save returns the original string and writes nothing', () => {
@@ -159,29 +171,30 @@ test('numbers, booleans and string quoting are written the way TOML reads them b
   assert.equal(readValue(tricky.text, 'comments.provider'), 'true');
   assert.ok(tricky.text.includes('provider = "true"'));
 
-  const quoted = applyAndVerify(text, [planValueEdit(parsed, 'sidebar.subtitle', 'He said "hi" \\ done')]);
-  assert.equal(readValue(quoted.text, 'sidebar.subtitle'), 'He said "hi" \\ done');
+  const quoted = applyAndVerify(text, [planValueEdit(parsed, 'sidebar.emoji', 'He said "hi" \\ done')]);
+  assert.equal(readValue(quoted.text, 'sidebar.emoji'), 'He said "hi" \\ done');
 });
 
 test('a multi-line array of inline tables is rewritten in the file\'s own style', () => {
-  const text = readConfig('params.toml');
+  // related.toml is the fixture's multi-line array of inline tables.
+  const text = readConfig('related.toml');
   const parsed = parseToml(text);
-  const widgets = [
-    { type: 'search' },
-    { type: 'archives', params: { limit: 3 } },
+  const indices = [
+    { name: 'tags', weight: 100 },
+    { name: 'categories', weight: 300 },
   ];
   const result = applyAndVerify(text, [
-    planValueEdit(parsed, 'widgets.homepage', widgets, { format: (value, options) => `[\n${value.map((w) => `        { ${Object.entries(w).map(([k, v]) => `${k} = ${formatValue(v)}`).join(', ')} },`).join('\n')}\n    ]` }),
+    planValueEdit(parsed, 'indices', indices, { format: (value) => `[\n${value.map((i) => `    { ${Object.entries(i).map(([k, v]) => `${k} = ${formatValue(v)}`).join(', ')} },`).join('\n')}\n]` }),
   ]);
 
-  assert.deepEqual(readValue(result.text, 'widgets.homepage'), [
-    { type: 'search' },
-    { type: 'archives', params: { limit: 3 } },
+  assert.deepEqual(readValue(result.text, 'indices'), [
+    { name: 'tags', weight: 100 },
+    { name: 'categories', weight: 300 },
   ]);
-  assert.ok(result.text.includes('    homepage = [\n        { type = "search" },\n'), 'keeps the one-per-line style');
-  // The sibling array and the rest of the file are untouched.
-  assert.ok(result.text.includes('    page     = [{ type = "toc" }]'));
-  assert.ok(result.text.includes('# GDPR Cookie Consent Configuration'));
+  assert.ok(result.text.includes('indices      = [\n    { name = "tags", weight = 100 },\n'), 'keeps the one-per-line style');
+  // The rest of the file is untouched.
+  assert.ok(result.text.includes('threshold    = 60'));
+  assert.ok(result.text.includes('toLower      = false'));
 });
 
 test('a key that does not exist is inserted at the end of its table, nothing above moving', () => {
@@ -190,11 +203,11 @@ test('a key that does not exist is inserted at the end of its table, nothing abo
   const before = readToml(text).values;
 
   // Into a table that already exists: appended inside it, everything above untouched.
-  const nested = applyAndVerify(text, [planInsertKey(parsed, 'widgets.pageSize', 7)]);
-  assert.equal(readValue(nested.text, 'widgets.pageSize'), 7);
-  assert.ok(nested.text.includes('    pageSize = 7'));
-  // Inserted inside `[widgets]`, which is not the last table: the file only gained the line.
-  assert.equal(nested.text.replace('    pageSize = 7\n', ''), text);
+  const nested = applyAndVerify(text, [planInsertKey(parsed, 'sidebar.avatar', 'img/avatar.png')]);
+  assert.equal(readValue(nested.text, 'sidebar.avatar'), 'img/avatar.png');
+  assert.ok(nested.text.includes('    avatar = "img/avatar.png"'));
+  // Inserted inside `[sidebar]`, which is not the last table: the file only gained the line.
+  assert.equal(nested.text.replace('    avatar = "img/avatar.png"\n', ''), text);
 
   // A table the file does not have yet: created at the end of the file.
   const newTable = applyAndVerify(text, [planInsertKey(parsed, 'zzProbe.default', 'dark')]);
@@ -261,23 +274,23 @@ test('array-of-table entries can be removed and added', () => {
   const text = readConfig('menu.toml');
   const removed = applyAndVerify(text, [planRemoveArrayEntry(parseToml(text), 'social', 0)]);
   assert.equal(removed.text.includes('identifier = "github"'), false);
-  // The other entry and its nested table survive in one piece.
-  assert.equal(readValue(removed.text, 'social[0].identifier'), 'twitter');
-  assert.equal(readValue(removed.text, 'social[0].params.icon'), 'brand-twitter');
+  // The fixture's other entry (rss) and its nested table survive in one piece.
+  assert.equal(readValue(removed.text, 'social[0].identifier'), 'rss');
+  assert.equal(readValue(removed.text, 'social[0].params.icon'), 'rss');
 
   const restored = applyAndVerify(removed.text, [
     planInsertArrayEntry(parseToml(removed.text), 'social', [
       '[[social]]',
       '    identifier = "github"',
       '    name       = "GitHub"',
-      '    url        = "https://github.com/CaiJimmy/hugo-theme-stack"',
+      '    url        = "https://github.com/example"',
       '',
       '    [social.params]',
       '        icon = "brand-github"',
     ]),
   ]);
   // A new entry is appended: the surviving entry keeps its position, the new one follows it.
-  assert.equal(readValue(restored.text, 'social[0].identifier'), 'twitter');
+  assert.equal(readValue(restored.text, 'social[0].identifier'), 'rss');
   assert.equal(readValue(restored.text, 'social[1].identifier'), 'github');
   assert.equal(readValue(restored.text, 'social[1].params.icon'), 'brand-github');
   assert.deepEqual(readToml(restored.text).arrays, ['social']);
@@ -331,7 +344,7 @@ test('the engine and the content layer agree about the site\'s languages', () =>
   const declared = Object.keys(languages.values)
     .filter((path) => path.endsWith('.locale'))
     .map((path) => path.slice(0, -'.locale'.length));
-  const fromContent = readSiteLanguages({ siteRoot: SITE_ROOT });
+  const fromContent = readSiteLanguages({ siteRoot: FIXTURE_SITE });
 
   assert.deepEqual([...fromContent.languages].sort(), declared.sort());
   assert.ok(declared.includes(fromContent.defaultLanguage ?? 'zh'));

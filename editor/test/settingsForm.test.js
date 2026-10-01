@@ -1,11 +1,11 @@
 // The settings form's own rule: what counts as "the user changed something", and what the
 // payload it produces does when it reaches the real service.
 //
-// The descriptor comes from the real settings endpoint (the real config files), and the
-// payload goes straight into the real service - so this checks the form against the code it
-// actually talks to, the way `fieldForm.test.js` does for front matter.
+// The descriptor comes from the real settings service over a sandbox copy of the fixture
+// config, and the payload goes straight into the real service - so this checks the form
+// against the code it actually talks to, the way `fieldForm.test.js` does for front matter.
 
-import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -15,17 +15,33 @@ import { readThemeInfo } from '../src/settings/themeInfo.js';
 import { createSettingsService } from '../src/settings/settingsService.js';
 import { readToml } from '../src/settings/toml/index.js';
 import { addWidget, editCount, editsFromDrafts, initialDrafts, removeWidget, setWidgetLimit, sourceLabel, valueText } from '../web/settingsDrafts.js';
+import { FIXTURE_SITE, INSTALLED_THEME } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
-const REAL_CONFIG = join(SITE_ROOT, 'config', '_default');
 const CONFIG_FILES = ['hugo.toml', 'languages.toml', 'markup.toml', 'menu.toml', 'params.toml', 'related.toml'];
 
-const themeInfo = readThemeInfo({ siteRoot: SITE_ROOT, site: { servicesDisqusShortname: 'hugo-theme-stack' } });
+// The form's tests edit a widget list and a `ja` language override; the fixture config
+// declares neither, so each sandbox declares them for itself (test/fixtures/README.md:
+// a test writes what only it needs).
+function seedConfig(configRoot) {
+  const paramsPath = join(configRoot, 'params.toml');
+  writeFileSync(
+    paramsPath,
+    `${readFileSync(paramsPath, 'utf8')}\n[widgets]\n    homepage = [\n        { type = "search" },\n        { type = "archives", params = { limit = 5 } },\n        { type = "categories", params = { limit = 10 } },\n        { type = "tag-cloud", params = { limit = 10 } },\n    ]\n    page     = [{ type = "toc" }]\n`,
+  );
+  const languagesPath = join(configRoot, 'languages.toml');
+  writeFileSync(
+    languagesPath,
+    `${readFileSync(languagesPath, 'utf8')}\n[ja]\n    label  = "日本語"\n    locale = "ja-JP"\n    title  = "Fixture Site JA"\n    weight = 3\n`,
+  );
+}
 
 function tempSite() {
   const root = mkdtempSync(join(tmpdir(), 'hve-settings-form-'));
   const configRoot = join(root, 'config', '_default');
-  cpSync(REAL_CONFIG, configRoot, { recursive: true });
+  cpSync(join(FIXTURE_SITE, 'config'), join(root, 'config'), { recursive: true });
+  cpSync(INSTALLED_THEME, join(root, 'themes', 'hugo-theme-stack'), { recursive: true });
+  seedConfig(configRoot);
+  const themeInfo = readThemeInfo({ siteRoot: root, site: { servicesDisqusShortname: 'fixture-site' } });
   return {
     root,
     configRoot,
@@ -61,10 +77,13 @@ test('editing the visible values produces exactly the payload the service writes
   try {
     const described = site.service.list();
     const state = initialDrafts(described);
+    // A draft that happens to equal the value on disk is dropped as a no-op, so the boolean
+    // drafts are flipped from whatever the site currently has instead of pinned to a literal.
+    const commentsNext = !described.settings['params.comments.enabled'].value;
     const before = Object.fromEntries(CONFIG_FILES.map((file) => [file, site.read(file)]));
 
     state.drafts['params.footer.since'] = '2011';
-    state.drafts['params.comments.enabled'] = false;
+    state.drafts['params.comments.enabled'] = commentsNext;
     state.drafts['params.colorScheme.default'] = 'dark';
     state.drafts['params.sidebar.subtitle'] = '新的副标题';
     state.drafts['params.sidebar.subtitle@ja'] = '日本語の副題';
@@ -89,7 +108,7 @@ test('editing the visible values produces exactly the payload the service writes
 
     const params = readToml(site.read('params.toml')).values;
     assert.equal(params['footer.since'], 2011);
-    assert.equal(params['comments.enabled'], false);
+    assert.equal(params['comments.enabled'], commentsNext);
     assert.equal(params['colorScheme.default'], 'dark');
     assert.equal(params['sidebar.subtitle'], '新的副标题');
     assert.equal(readToml(site.read('languages.toml')).values['ja.params.sidebar.subtitle'], '日本語の副題');

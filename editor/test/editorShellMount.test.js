@@ -9,7 +9,7 @@
 // Nothing caught it, because no test looked at the shell as a whole: the component was never
 // deleted, so every test that imported it or the services behind it still passed. These tests
 // look at the shell as a whole - what it declares versus what it renders - and then walk the
-// selection flow against the real content tree.
+// selection flow against the fixture content tree.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,10 +18,12 @@ import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createEditorServer } from '../server/index.js';
+import { FIXTURE_CONTENT, FIXTURE_SITE } from './fixtures/harness.js';
 
 const ROOT = join(import.meta.dirname, '..');
-const SITE_ROOT = '/projects/site';
-const CONTENT_ROOT = join(SITE_ROOT, 'content');
+// Every test in this file only reads; the fixture corpus is the tree they read.
+const SITE_ROOT = FIXTURE_SITE;
+const CONTENT_ROOT = FIXTURE_CONTENT;
 
 const appSource = readFileSync(join(ROOT, 'web', 'App.vue'), 'utf8');
 const baseCss = readFileSync(join(ROOT, 'web', 'styles', 'base.css'), 'utf8');
@@ -161,7 +163,7 @@ test('the stylesheet gives the selector its own column and never hides it', () =
   }
 });
 
-// --- the flow, against the real content tree --------------------------------
+// --- the flow, against the fixture content tree -----------------------------
 
 function stubBuildService() {
   return {
@@ -195,7 +197,7 @@ function digest(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
 
-test('open -> choose -> edit walks the real tree without touching a byte', async () => {
+test('open -> choose -> edit walks the fixture tree without touching a byte', async () => {
   await withServer(async (base) => {
     // What the selector renders is this list.
     const list = await (await fetch(`${base}/api/documents`)).json();

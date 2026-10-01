@@ -1,8 +1,8 @@
 ---
 title: 關於
 description: 關於本站及其作者的一切。
-date: 2026-01-26
-lastmod: 2026-01-26
+date: 2026-09-30
+lastmod: 2026-09-30
 menu:
     main: 
         weight: -90

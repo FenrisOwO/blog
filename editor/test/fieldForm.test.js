@@ -1,19 +1,21 @@
 // The front-matter form's own rule: what counts as "the user changed something".
 //
-// The descriptors come from the real engine reading a real document, and the payload the
+// The descriptors come from the real engine reading a fixture document, and the payload the
 // form produces is fed straight back into the real editor path - so this checks the form
 // against the code it actually talks to, not against a hand-written stand-in.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
 
 import { applyFieldEdits, describeFields, missingFields, splitDocument } from '../src/frontmatter/index.js';
 import { collectEdits } from '../web/fieldDrafts.js';
+import { FIXTURE, FIXTURE_CONTENT } from './fixtures/harness.js';
 
-const ABOUT = '/projects/site/content/page/about/index.md';
-const GALLERY = '/projects/site/content/post/Image Gallery/index.md';
-const POST = '/projects/site/content/post/pagination-test-01.en.md';
+const ABOUT = join(FIXTURE_CONTENT, FIXTURE.page);
+const GALLERY = join(FIXTURE_CONTENT, FIXTURE.bundle);
+const POST = join(FIXTURE_CONTENT, FIXTURE.article);
 
 function modelFor(file) {
   const text = readFileSync(file, 'utf8');
@@ -38,7 +40,7 @@ function stateFor(model) {
   return { drafts, listDrafts, added: [], removed: [] };
 }
 
-test('opening the form and saving nothing is a no-op on the real corpus', () => {
+test('opening the form and saving nothing is a no-op on the fixture corpus', () => {
   for (const file of [ABOUT, GALLERY, POST]) {
     const model = modelFor(file);
     const edits = collectEdits(model, stateFor(model));
@@ -118,8 +120,9 @@ test('a field the user adds is only added once it has a value', () => {
   assert.deepEqual(edits, { set: { author: 'Jimmy' }, remove: [] });
 
   const applied = applyFieldEdits(model.text, edits);
+  const titleLine = model.text.split('\n').find((line) => line.startsWith('title:'));
   assert.match(applied.text, /author: Jimmy\n/);
-  assert.ok(applied.text.includes('title: 相册\n'), 'the existing fields are untouched');
+  assert.ok(applied.text.includes(`${titleLine}\n`), 'the existing fields are untouched');
 });
 
 test('a value typed exactly as the document has it is not an edit', () => {

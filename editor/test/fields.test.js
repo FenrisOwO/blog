@@ -1,6 +1,7 @@
 // P3.2 acceptance tests: the front-matter field model and its surgical edits.
 //
-// The corpus is the project's real content tree. The load-bearing test is the last one:
+// The corpus is the fixture site (test/fixtures/README.md), which the tests own. The
+// load-bearing test is the last one:
 // feeding every field back with the value it already has must reproduce the file byte for
 // byte, which is what proves the form cannot reformat a document nobody edited.
 
@@ -10,8 +11,9 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { applyFieldEdits, describeFields, missingFields, splitDocument } from '../src/frontmatter/index.js';
+import { FIXTURE, FIXTURE_CONTENT } from './fixtures/harness.js';
 
-const CONTENT_ROOT = process.env.HUGO_CONTENT_ROOT ?? '/projects/site/content';
+const CONTENT_ROOT = FIXTURE_CONTENT;
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -25,11 +27,11 @@ function walk(dir, out = []) {
 const FILES = walk(CONTENT_ROOT).sort();
 const read = (relPath) => readFileSync(join(CONTENT_ROOT, relPath), 'utf8');
 
-const ABOUT = 'page/about/index.md';
-const LINKS = 'page/links/index.md';
-const CATEGORY = 'categories/Documentation/_index.md';
-const GALLERY = 'post/Image Gallery/index.md';
-const HOME = '_index.md';
+const ABOUT = FIXTURE.page;
+const LINKS = FIXTURE.links;
+const CATEGORY = FIXTURE.category;
+const GALLERY = FIXTURE.bundle;
+const HOME = FIXTURE.home;
 
 function changedLines(before, after) {
   const left = before.split('\n');
@@ -81,6 +83,7 @@ test('a sequence of maps (links) is shown but never rewritten by the form', () =
 test('a nested map of scalars (style) exposes exactly its scalar children', () => {
   const raw = splitDocument(read(CATEGORY)).frontMatterRaw;
   assert.equal(fieldByPath(raw, 'style').shape, 'map');
+  // The fixture's style map: two scalars, exposed one by one.
   assert.equal(fieldByPath(raw, 'style.background').value, '#2a9d8f');
   assert.equal(fieldByPath(raw, 'style.color').value, '#fff');
 
@@ -93,11 +96,12 @@ test('a nested map of scalars (style) exposes exactly its scalar children', () =
 
 test('editing one field rewrites one line and leaves every sibling byte-identical', () => {
   const before = read(GALLERY);
+  const image = before.match(/^image: (.+)$/m)[1];
   const next = applyFieldEdits(before, { set: { title: '相册（改名）' } });
 
   assert.equal(changedLines(before, next.text), 1);
   assert.match(next.text, /title: 相册（改名）\n/);
-  assert.match(next.text, /image: helena-hertz-wWZzXlDpMog-unsplash\.jpg\n/);
+  assert.match(next.text, new RegExp(`image: ${image}\\n`), 'the image field is untouched');
   assert.match(next.text, /toc: false\n/);
   assert.equal(splitDocument(next.text).bodyRaw, splitDocument(before).bodyRaw);
   assert.deepEqual(next.applied, [{ path: 'title', action: 'update' }]);
@@ -126,11 +130,11 @@ test('a field the file does not have yet is appended, and nothing above it moves
 
 test('a new list uses the file\'s own indentation', () => {
   const before = read(GALLERY);
-  assert.match(before, /categories:\n    - Documentation/);
+  assert.match(before, /categories:\n {4}- Fixture/);
 
   const next = applyFieldEdits(before, { set: { tags: ['相册', 'gallery'] } });
   // The file already uses a four-space list indent, so the rewrite keeps it.
-  assert.match(next.text, /tags:\n    - 相册\n    - gallery\n/);
+  assert.match(next.text, /tags:\n {4}- 相册\n {4}- gallery\n/);
 });
 
 test('a text field keeps string meaning, a booleanOrText field does not', () => {
@@ -196,9 +200,11 @@ test('removing a top-level key is explicit and surgical', () => {
 
   const beforeLines = before.split('\n');
   const afterLines = next.text.split('\n');
+  const lastmodLine = beforeLines.find((line) => line.startsWith('lastmod:'));
   assert.equal(afterLines.length, beforeLines.length - 1, 'exactly one line is gone');
-  assert.deepEqual(afterLines, beforeLines.filter((line) => line !== 'lastmod: 2026-01-26'));
-  assert.match(next.text, /date: 2026-01-26\n/);
+  assert.deepEqual(afterLines, beforeLines.filter((line) => line !== lastmodLine));
+  const dateLine = beforeLines.find((line) => line.startsWith('date:'));
+  assert.ok(next.text.includes(`${dateLine}\n`), 'the sibling date is untouched');
   assert.deepEqual(next.applied, [{ path: 'lastmod', action: 'remove' }]);
 
   const missing = applyFieldEdits(before, { remove: ['nosuchkey'] });
@@ -253,8 +259,10 @@ test('the catalogue only offers to create what it can actually write', () => {
   assert.equal(galleryMissing.find((field) => field.key === 'author')?.creatable, true);
 });
 
-test('the field form is lossless on the real corpus', () => {
-  assert.ok(FILES.length >= 49, `corpus too small: ${FILES.length}`);
+test('the field form is lossless on the fixture corpus', () => {
+  // Every Markdown file of the fixture, so the test fails loudly if the corpus shrinks to
+  // the point of proving nothing.
+  assert.ok(FILES.length >= 20, `corpus too small: ${FILES.length}`);
 
   const broken = [];
   for (const file of FILES) {

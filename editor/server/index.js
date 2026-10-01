@@ -40,13 +40,17 @@ import { ChangeSetError } from '../src/relations/changeSet.js';
 import {
   GitCommandError,
   GitNotARepositoryError,
+  GitUnknownCommitError,
   GitUnavailableError,
   GitValidationError,
   createGitService,
 } from '../src/git/index.js';
 
 const EDITOR_ROOT = resolve(import.meta.dirname, '..');
-const DEFAULT_BUILD_PATHS = defaultBuildPaths({ editorRoot: EDITOR_ROOT, siteRoot: '/projects/site' });
+const DEFAULT_BUILD_PATHS = defaultBuildPaths({ editorRoot: EDITOR_ROOT, siteRoot: join(EDITOR_ROOT, '..', 'site')});
+
+// Oct. 10th:
+// const DEFAULT_BUILD_PATHS = defaultBuildPaths({ editorRoot: EDITOR_ROOT, siteRoot: '/projects/site' });
 
 // The sections this editor manages, in navigation order; '' is the content root, i.e. the
 // home page and anything else sitting at the top level. Phase 1 wrote only to post/; Phase 3
@@ -77,11 +81,15 @@ const MIME_TYPES = {
 };
 
 const DEFAULTS = {
-  siteRoot: '/projects/site',
-  contentRoot: '/projects/site/content',
-  // Phase 5: the site's own Hugo config. Only the files already in there are writable, and
-  // only through the TOML engine.
-  configRoot: '/projects/site/config/_default',
+//  siteRoot: '/projects/site',
+//  contentRoot: '/projects/site/content',
+//  // Phase 5: the site's own Hugo config. Only the files already in there are writable, and
+//  // only through the TOML engine.
+//  configRoot: '/projects/site/config/_default',
+  siteRoot: join(EDITOR_ROOT, '..', 'site'),
+  contentRoot: join(EDITOR_ROOT, '..', 'site', 'content'),
+  configRoot: join(EDITOR_ROOT, '..', 'site', 'config', '_default'),
+  
   editorDist: join(EDITOR_ROOT, 'dist'),
   backupRoot: join(EDITOR_ROOT, '.backups'),
   section: 'post',
@@ -509,6 +517,11 @@ export function createEditorServer(options = {}) {
     }
     if (error instanceof GitUnavailableError) {
       sendJson(res, 503, { error: error.message });
+      return;
+    }
+    if (error instanceof GitUnknownCommitError) {
+      // A history row that has since been rewritten: the panel refreshes, it does not crash.
+      sendJson(res, 409, { error: error.message, stderr: error.stderr });
       return;
     }
     if (error instanceof GitCommandError) {

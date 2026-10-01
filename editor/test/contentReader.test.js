@@ -1,14 +1,16 @@
 // P1.3 acceptance tests.
 //
-// Runs against the project's real content tree. ContentReader is read-only, so the
-// suite also asserts that the tree hash is identical before and after scanning.
+// Runs against the fixture corpus (test/fixtures/README.md), which the tests own. ContentReader
+// is read-only, so the suite also asserts that the tree hash is identical before and after
+// scanning.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
+import { FIXTURE, FIXTURE_SITE } from './fixtures/harness.js';
 import {
   DEFAULT_CONTENT_KINDS,
   deriveContentKind,
@@ -19,9 +21,15 @@ import {
   readTaxonomies,
 } from '../src/site/contentReader.js';
 
-const SITE_ROOT = process.env.HUGO_SITE_ROOT ?? '/projects/site';
+const SITE_ROOT = FIXTURE_SITE;
 const CONTENT_ROOT = join(SITE_ROOT, 'content');
+// A four-language list for the synthetic filename cases, and the two languages the fixture
+// site itself declares in its config.
 const LANGS = ['en', 'zh', 'zh-hant-tw', 'ja'];
+const SITE_LANGS = ['en', 'zh'];
+
+// The fixture's documents, named once. `BUNDLE_DIR` is the bundle the resource tests look at.
+const BUNDLE_DIR = dirname(FIXTURE.bundle);
 
 function walkAll(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -83,31 +91,32 @@ test('the site language list is read from the project config', () => {
   const { languages, defaultLanguage } = readSiteLanguages({ siteRoot: SITE_ROOT });
 
   assert.equal(defaultLanguage, 'zh');
-  assert.deepEqual([...languages].sort(), [...LANGS].sort());
+  assert.deepEqual([...languages].sort(), [...SITE_LANGS].sort());
 });
 
 test('content/post is identified into standalone files, bundles and languages', async () => {
   const { languages, defaultLanguage } = readSiteLanguages({ siteRoot: SITE_ROOT });
   const result = await readSection({ contentRoot: CONTENT_ROOT, section: 'post', languages, defaultLanguage });
 
+  // The fixture's post section: 5 standalone articles and 2 leaf bundles (4 documents).
   assert.deepEqual(result.warnings, []);
-  assert.equal(result.documents.length, 27);
-  assert.equal(result.documents.filter((doc) => doc.kind === 'standalone').length, 14);
-  assert.equal(result.documents.filter((doc) => doc.kind === 'leaf-bundle').length, 13);
+  assert.equal(result.documents.length, 9);
+  assert.equal(result.documents.filter((doc) => doc.kind === 'standalone').length, 5);
+  assert.equal(result.documents.filter((doc) => doc.kind === 'leaf-bundle').length, 4);
 
   const bundlePaths = new Set(result.documents.map((doc) => doc.bundlePath).filter(Boolean));
-  assert.equal(bundlePaths.size, 5);
-  assert.equal(result.groups.length, 19); // 14 standalone + 5 bundles
+  assert.equal(bundlePaths.size, 2);
+  // Groups are translation keys, not files: a standalone document with an English sibling is
+  // one group, so the three standalone keys plus the two bundles make five.
+  assert.equal(result.groups.length, 5);
 
   const byId = new Map(result.documents.map((doc) => [doc.id, doc]));
-  assert.equal(byId.get('post/Image Gallery/index.md').language, 'zh');
-  assert.equal(byId.get('post/Image Gallery/index.md').languageSuffix, null);
-  assert.equal(byId.get('post/Image Gallery/index.en.md').language, 'en');
-  assert.equal(byId.get('post/Image Gallery/index.ja.md').language, 'ja');
-  assert.equal(byId.get('post/Image Gallery/index.zh-hant-tw.md').language, 'zh-hant-tw');
-  assert.equal(byId.get('post/mermaid-diagrams/index.en.md').kind, 'leaf-bundle');
-  assert.equal(byId.get('post/mermaid-diagrams/index.en.md').language, 'en');
-  assert.equal(byId.get('post/pagination-test-01.en.md').kind, 'standalone');
+  assert.equal(byId.get(FIXTURE.bundle).language, 'zh');
+  assert.equal(byId.get(FIXTURE.bundle).languageSuffix, null);
+  assert.equal(byId.get(FIXTURE.bundleEn).language, 'en');
+  assert.equal(byId.get(FIXTURE.markdown).kind, 'leaf-bundle');
+  assert.equal(byId.get(FIXTURE.markdown).language, 'en');
+  assert.equal(byId.get(FIXTURE.article).kind, 'standalone');
 
   // IDs are the original relative paths.
   for (const doc of result.documents) {
@@ -120,37 +129,43 @@ test('bundle resources are discovered and classified, never modified', async () 
   const { languages, defaultLanguage } = readSiteLanguages({ siteRoot: SITE_ROOT });
   const result = await readSection({ contentRoot: CONTENT_ROOT, section: 'post', languages, defaultLanguage });
 
-  assert.equal(result.resources.length, 5);
+  // The fixture bundle owns two images: one JPEG the page points at, one PNG it does not use.
+  assert.equal(result.resources.length, 2);
   assert.ok(result.resources.every((resource) => resource.type === 'image'));
-  assert.ok(result.resources.every((resource) => resource.mimeType === 'image/jpeg'));
   assert.ok(result.resources.every((resource) => resource.size > 0));
+  assert.deepEqual(result.resources.map((resource) => resource.mimeType).sort(), ['image/jpeg', 'image/png']);
 
-  const gallery = result.resources.filter((resource) => resource.path.startsWith('post/Image Gallery/'));
-  assert.equal(gallery.length, 4);
-  assert.ok(gallery.every((resource) => resource.extension === '.jpg'));
+  const gallery = result.resources.filter((resource) => resource.path.startsWith(`${BUNDLE_DIR}/`));
+  assert.equal(gallery.length, 2);
+  assert.deepEqual(gallery.map((resource) => resource.extension).sort(), ['.jpg', '.png']);
   // A resource knows which bundle owns it, and through it which page it belongs to.
-  assert.ok(gallery.every((resource) => resource.bundlePath === 'post/Image Gallery'));
+  assert.ok(gallery.every((resource) => resource.bundlePath === BUNDLE_DIR));
   assert.ok(gallery.every((resource) => resource.bundleKind === 'leaf-bundle'));
-  assert.ok(gallery.every((resource) => resource.ownerDocument === 'post/Image Gallery/index.md'));
+  assert.ok(gallery.every((resource) => resource.ownerDocument === FIXTURE.bundle));
   // A plain reader call decides nothing about safety: without a write predicate the
   // capabilities are closed. The service passes the guard's answer (see contentTypes).
   assert.ok(gallery.every((resource) => resource.capabilities.delete === false));
-  // The reference hint comes from the documents already parsed, not from a second scan.
-  assert.ok(gallery.every((resource) => resource.referenced === true));
-  assert.ok(gallery.every((resource) => resource.referencedBy.includes('post/Image Gallery/index.md')));
+  // The reference hint comes from the documents already parsed, not from a second scan: the
+  // page points at its photo, and an unused file is still listed - just not referenced.
+  const photo = gallery.find((resource) => resource.path.endsWith('fixture-photo.jpg'));
+  const unused = gallery.find((resource) => resource.path.endsWith('fixture-extra.png'));
+  assert.equal(photo.referenced, true);
+  assert.ok(photo.referencedBy.includes(FIXTURE.bundle), 'the bundle page points at its photo');
+  assert.ok(photo.referencedBy.every((id) => id.startsWith(`${BUNDLE_DIR}/index`)), 'and nothing else does');
+  assert.equal(unused.referenced, false, 'an unreferenced resource is discovered, not invented');
 });
 
 test('the whole content tree can be read, and branch bundles are recognised', async () => {
   const { languages, defaultLanguage } = readSiteLanguages({ siteRoot: SITE_ROOT });
   const result = await readSection({ contentRoot: CONTENT_ROOT, section: '', languages, defaultLanguage });
 
-  assert.equal(result.documents.length, 51);
+  assert.equal(result.documents.length, 20);
 
   const byId = new Map(result.documents.map((doc) => [doc.id, doc]));
   assert.equal(byId.get('_index.md').kind, 'branch-bundle');
   assert.equal(byId.get('_index.en.md').language, 'en');
-  assert.equal(byId.get('categories/Documentation/_index.zh-hant-tw.md').kind, 'branch-bundle');
-  assert.equal(byId.get('page/about/index.md').kind, 'leaf-bundle');
+  assert.equal(byId.get(FIXTURE.categoryEn).kind, 'branch-bundle');
+  assert.equal(byId.get(FIXTURE.page).kind, 'leaf-bundle');
 });
 
 test('missing title/date/draft is normal and never rewritten', async () => {
@@ -168,7 +183,7 @@ test('unknown front matter keys stay unknown but are never dropped', async () =>
   const { languages, defaultLanguage } = readSiteLanguages({ siteRoot: SITE_ROOT });
   const result = await readSection({ contentRoot: CONTENT_ROOT, section: 'post', languages, defaultLanguage });
 
-  const gallery = result.documents.find((doc) => doc.id === 'post/Image Gallery/index.md');
+  const gallery = result.documents.find((doc) => doc.id === FIXTURE.bundle);
 
   // `image` and `toc` are not part of the managed field set...
   assert.ok(gallery.frontMatterKeys.includes('image'));
@@ -177,7 +192,7 @@ test('unknown front matter keys stay unknown but are never dropped', async () =>
   assert.equal('toc' in gallery.meta, false);
 
   // ...yet they survive verbatim in the raw front matter.
-  assert.match(gallery.frontMatterRaw, /image: helena-hertz-wWZzXlDpMog-unsplash\.jpg/);
+  assert.match(gallery.frontMatterRaw, /image: fixture-photo\.jpg/);
   assert.match(gallery.frontMatterRaw, /toc: false/);
 });
 
@@ -252,12 +267,12 @@ test('every document says what it is: type, bundle form, language, and when it c
   const { documents } = await readSection({ contentRoot: CONTENT_ROOT, section: '', languages, defaultLanguage, kinds });
 
   const byPath = new Map(documents.map((doc) => [doc.path, doc]));
-  assert.equal(byPath.get('post/pagination-test-01.en.md').contentKind, 'article');
-  assert.equal(byPath.get('post/pagination-test-01.en.md').kind, 'standalone');
-  assert.equal(byPath.get('page/about/index.md').contentKind, 'page');
-  assert.equal(byPath.get('page/about/index.md').kind, 'leaf-bundle');
-  assert.equal(byPath.get('categories/Documentation/_index.md').contentKind, 'category');
-  assert.equal(byPath.get('categories/Documentation/_index.md').kind, 'branch-bundle');
+  assert.equal(byPath.get(FIXTURE.article).contentKind, 'article');
+  assert.equal(byPath.get(FIXTURE.article).kind, 'standalone');
+  assert.equal(byPath.get(FIXTURE.page).contentKind, 'page');
+  assert.equal(byPath.get(FIXTURE.page).kind, 'leaf-bundle');
+  assert.equal(byPath.get(FIXTURE.category).contentKind, 'category');
+  assert.equal(byPath.get(FIXTURE.category).kind, 'branch-bundle');
   assert.equal(byPath.get('_index.md').contentKind, 'other');
 
   for (const doc of documents) {
@@ -273,20 +288,18 @@ test('a branch bundle owns the files beside its index, but not its child pages',
   const { languages, defaultLanguage } = readSiteLanguages({ siteRoot: SITE_ROOT });
   const kinds = { ...DEFAULT_CONTENT_KINDS, taxonomy: readTaxonomies({ siteRoot: SITE_ROOT }) };
 
-  // categories/Documentation holds `_index.md` in four languages plus the image the page
-  // uses. The image is a resource of THAT page; the sibling `_index.md` files are the page.
+  // The fixture category holds `_index.md` in two languages plus the image the page uses. The
+  // image is a resource of THAT page; the sibling `_index.md` files are the page.
   const categories = await readSection({ contentRoot: CONTENT_ROOT, section: 'categories', languages, defaultLanguage, kinds });
-  assert.equal(categories.documents.length, 4);
-  assert.deepEqual(categories.resources.map((resource) => resource.path), [
-    'categories/Documentation/hutomo-abrianto-l2jk-uxb1BY-unsplash.jpg',
-  ]);
+  assert.equal(categories.documents.length, 2);
+  assert.deepEqual(categories.resources.map((resource) => resource.path), [FIXTURE.categoryResource]);
   assert.ok(categories.resources.every((resource) => resource.type === 'image'));
   // A branch bundle's image is owned by the term page, not by a leaf bundle.
   assert.equal(categories.resources[0].bundleKind, 'branch-bundle');
-  assert.equal(categories.resources[0].ownerDocument, 'categories/Documentation/_index.md');
+  assert.equal(categories.resources[0].ownerDocument, FIXTURE.category);
   assert.equal(categories.resources[0].referenced, true, 'the page image is referenced from its own _index files');
 
   // A leaf bundle's resources are still found exactly as before.
   const pages = await readSection({ contentRoot: CONTENT_ROOT, section: 'page', languages, defaultLanguage, kinds });
-  assert.deepEqual(pages.resources.map((resource) => resource.path), ['page/links/ts-logo-128.jpg']);
+  assert.deepEqual(pages.resources.map((resource) => resource.path), [FIXTURE.linksResource]);
 });

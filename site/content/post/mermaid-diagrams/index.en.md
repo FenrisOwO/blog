@@ -10,6 +10,7 @@ tags:
     - Mermaid
     - Diagrams
     - Markdown
+draft: true
 ---
 
 This theme supports [Mermaid](https://mermaid.js.org/) diagrams directly in your Markdown content. Mermaid lets you create diagrams and visualizations using text and code.

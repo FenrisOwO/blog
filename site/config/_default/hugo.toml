@@ -1,4 +1,4 @@
-baseURL                = "http://localhost:1313/"
+baseURL = "https://fenrisowo.github.io/"
 title                  = "苍陨的博客"
 # Theme i18n support
 # See i18n folder for available languages
@@ -10,11 +10,8 @@ hasCJKLanguage         = true
 theme = "hugo-theme-stack"
 
 [pagination]
-    pagerSize = 3
+    pagerSize = 4
 
 [permalinks]
     post = "/p/:slug/"
     page = "/:slug/"
-
-[services.disqus]
-    shortname = "hugo-theme-stack"

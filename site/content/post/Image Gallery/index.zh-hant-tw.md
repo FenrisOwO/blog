@@ -9,7 +9,8 @@ categories:
 tags:
     - Gallery
     - Photoswipe
-toc: false
+toc: true
+draft: true
 ---
 
 Stack 主題內置了對相簿的支持。你只需要簡單地將多張圖片並排放置，就可以創建一個精美的相簿。

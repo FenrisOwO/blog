@@ -487,20 +487,16 @@ function tagOfConflict(tag) {
           <li v-for="tag in visibleTags" :key="tag.identity">
             <button
               type="button"
-              class="list-item selectable"
+              class="list-item selectable tag-row"
               :class="{ selected: selected?.identity === tag.identity, orphan: tag.orphan }"
               @click="openTag(tag)"
             >
-              <span class="body">
-                <span class="row-titles">
-                  <span class="title">{{ tag.name }}</span>
-                  <span class="badge accent">{{ tag.usage }}</span>
-                  <span v-if="tagOfConflict(tag)" class="badge warn" title="多种写法会被 Hugo 合并为同一个 term">同义 {{ tag.names.length }}</span>
-                  <span v-if="tag.metadataPages.length" class="badge" title="有元数据页">页</span>
-                  <span v-if="tag.orphan" class="badge warn" title="没有文档使用这个标签">孤立页</span>
-                </span>
-                <span class="meta">{{ tag.languages.join(' ') }}</span>
-              </span>
+              <span class="title">{{ tag.name }}</span>
+              <span class="badge accent">{{ tag.usage }}</span>
+              <span v-if="tagOfConflict(tag)" class="badge warn" title="多种写法会被 Hugo 合并为同一个 term">同义 {{ tag.names.length }}</span>
+              <span v-if="tag.metadataPages.length" class="badge" title="有元数据页">页</span>
+              <span v-if="tag.orphan" class="badge warn" title="没有文档使用这个标签">孤立页</span>
+              <span class="langs">{{ tag.languages.join(' ') }}</span>
             </button>
           </li>
         </ul>
@@ -709,18 +705,16 @@ function tagOfConflict(tag) {
   margin: var(--space-lg) var(--page-pad) 0;
 }
 
+/* The page is two columns, as it was before the shell rewrite: the list is a fixed-width
+   column and the detail sits beside it. As a plain block the body put the whole tag list
+   across the window and pushed the detail underneath. */
 .relations-body {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  align-items: start;
   overflow-y: auto;
   gap: var(--space-lg);
   padding: var(--space-lg) var(--page-pad) var(--page-pad);
-}
-
-.relations-columns {
-  display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  gap: var(--space-lg);
-  align-items: start;
-  min-height: 0;
 }
 
 .relations-side,
@@ -751,6 +745,32 @@ function tagOfConflict(tag) {
 
 .relations-main .list-item .body {
   gap: 2px;
+}
+
+/* A tag is one line: the name, its badges, then the languages pushed to the right. The shared
+   row carries a title line and a meta line, which doubled the height of a list that is long by
+   nature (14 tags here); the languages are the only thing the meta line held. */
+.tag-row {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+}
+
+.tag-row .title {
+  flex: 0 1 auto;
+  font-size: var(--text-md);
+}
+
+.tag-row .langs {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  color: var(--faint);
+  font-size: var(--text-2xs);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .row-titles {
@@ -847,7 +867,8 @@ function tagOfConflict(tag) {
 }
 
 @media (max-width: 1100px) {
-  .relations-columns {
+  /* A narrow window stacks the two columns instead of squashing both. */
+  .relations-body {
     grid-template-columns: minmax(0, 1fr);
   }
 }

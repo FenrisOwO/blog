@@ -6,6 +6,7 @@ math: true
 categories:
     - Documentation
 slug: math-typesetting
+draft: true
 ---
 
 The Stack theme supports rendering mathematical notation using [KaTeX](https://katex.org/).

@@ -1,8 +1,8 @@
 ---
 title: このサイトについて
 description: このサイトとその著者についてのすべて。
-date: 2026-01-26
-lastmod: 2026-01-26
+date: 2026-09-30
+lastmod: 2026-09-30
 menu:
     main: 
         weight: -90

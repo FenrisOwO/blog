@@ -132,6 +132,9 @@ const buildError = ref(null);
 // Phase 8: git
 const gitStatus = ref(null);
 const gitReloadKey = ref(0);
+// Phase 9: what the palette asked the git panel to do - land on the history tab, or put the
+// cursor in the commit message. A fresh object each time, so two identical requests both fire.
+const gitTabRequest = ref(null);
 
 // Phase 3 dialogs
 const createOpen = ref(false);
@@ -711,9 +714,11 @@ const actions = {
     document.querySelector('.topbar-search input')?.focus();
   },
   commit: () => {
+    gitTabRequest.value = { tab: 'changes', focusMessage: true };
     view.value = 'git';
   },
   gitHistory: () => {
+    gitTabRequest.value = { tab: 'history', focusMessage: false };
     view.value = 'git';
   },
   open: (doc) => openDocument(doc),
@@ -1043,6 +1048,7 @@ onUnmounted(() => {
       <GitPanel
         v-else-if="view === 'git'"
         :reload-key="gitReloadKey"
+        :tab-request="gitTabRequest"
         :notify="(kind, title, options) => toasts.push(kind, title, options)"
         @changed="onGitChanged"
       />

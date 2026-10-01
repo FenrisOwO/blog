@@ -14,7 +14,7 @@ named change set, one confirmation, then a transaction with read-back verificati
 ## Commands
 
 ```bash
-node --test          # full suite (415 tests)  — npm test
+node --test          # full suite (416 tests)  — npm test
 node scripts/acceptance.mjs   # real-site gate (T1..T18) — npm run accept
 npm run build:web    # rebuild web/ -> dist/ (Vite + Vue 3)
 node server/index.js # run the editor on http://127.0.0.1:1313/editor/
@@ -22,6 +22,13 @@ node server/index.js # run the editor on http://127.0.0.1:1313/editor/
 
 `npm run accept` is the gate that matters: it runs against the **real** site, hashes the
 whole source tree before and after, and fails if a no-op save or a build changes a byte.
+
+## Docs
+
+`docs/用户手册.md` is the user manual (Chinese): startup, every view, the two-step
+write rule, keyboard/slash commands, the API list and the known limitations. It is
+written for the site owner, so keep it in step with the UI text when the UI changes.
+Screenshots live in `docs/images/`.
 
 ## The layers (do not blur them)
 
@@ -318,6 +325,40 @@ rewritten at all.
   `page/links/index.md`, whose English sibling is published at `/en/p/...` because the
   site's default language (`zh`) is the only one without a URL prefix.
 
+### Phase Insert C: the baseline owns its data (2026-09-30, accepted)
+
+The user deleted the theme's twelve demo posts and rewrote several pages; that is legitimate
+content work, and it turned the suite red (416 pass -> 352 pass / 64 fail) because 14 test files
+and the pinned counts in `test/acceptance.test.js` were reading the *live* tree. The insert takes
+option (b) from the old note: **the tests own their data.** `test/fixtures/README.md` states the
+rule and documents the corpus; `test/fixtures/harness.js` is the only module that knows the
+paths, and `makeFixtureSandbox(t)` hands a writable copy to any test that writes.
+
+* Migrated this session: `acceptance` (now 20 documents / 9 writable / 11 read-only, and the
+  fixture tree is proven byte-identical after the sweep), the settings/build group
+  (`buildService`, `editorShellMount`, `markdownPreservation`, `serverBuild`, `serverSettings`,
+  `settingsForm`, `settingsHugo`, `settingsService`, `settingsSocialIcons`, `tomlEngine`), the relations/server group
+  (`tagRelations`, `linkRelations`, `serverRelations`, `sequence`, `server`, `serverPhase3`) and
+  the content group migrated earlier (`documentService`, `documentLifecycle`, `contentTypes`,
+  `fields`, `frontmatter`, `contentReader`, `transaction`, `assets`, `assetsApi`, `fieldForm`).
+* `npm test` is **424 passed / 0 failed**. The user can delete an article, add a language or
+  rewrite a page without turning it red - that is the whole point of the insert.
+* One deliberate exception: the last test of `test/acceptance.test.js` walks the real site to
+  prove the editor's own files and backups are never installed *inside* the site Hugo builds.
+  That is a statement about the deployment, not about the editor, so it cannot use a fixture.
+* `scripts/acceptance.mjs` still runs against the real site by design (it is the smoke run on the
+  user's own site, not a unit test) and still samples `post/pagination-test-01.en.md`, the
+  `Image Gallery` bundle and `page/links/index.md`. As of 2026-09-30 it is **red**: 120 ✅ / 6 ❌,
+  then an uncaught `ENOENT` on `public/p/image-gallery/hudai-gayiran-3Od_VKcDEAA-unsplash.jpg`.
+  The ❌ are coupling or drift, not regressions - the published HTML page count (73), the category
+  delete counts, the `ja` overlay restore, the published footer year, the new asset in `public/`.
+  The run leaves the source tree intact: every file it rewrote (the two content pages, the four
+  config files, the replaced image) was compared against the editor's `.backups` copy and matches,
+  and the one artifact it left behind (the uploaded png, parked in `.backups/trash`) was removed.
+  Next step, undecided: (a) restore the twelve demo posts from the trash and keep the script on
+  the real site, or (b) point the script at a fixture copy and keep the real site out of the gate
+  entirely. Take (b) if the gate should be runnable by anyone, at any time.
+
 ## Phase 8 notes (modern editor shell + Markdown input)
 
 * The shell is `web/`: `App.vue` (one owner of state) plus the panels, and four plain modules -
@@ -422,3 +463,123 @@ rewritten at all.
   * the whole-tree "the site came back byte for byte" checks **attribute** every difference: paths
     this run named must be restored, and anything else that moved is reported as an outside write
     (`⚠️`) instead of failing the run.
+
+## Insert D note (social icons: Phosphor + picked pictures)
+
+The Stack theme resolves a social icon with `resources.GetMatch "icons/<name>.svg"` and **stops the
+build** when that file does not exist, so "let the user pick any icon" means "the editor has to
+install the SVG". Three value forms are accepted for `[[social]].params.icon`, and only the first
+is what the site allowed before:
+
+1. a theme icon name (`brand-github`, `rss`) - written as it is, exactly as before;
+2. `phosphor-<name>` - the original SVG from the optional `@phosphor-icons/core` dependency
+   (1512 names under `assets/regular/`). The package does **not** export `package.json`, so its root
+   is found from the main entry, not from `<pkg>/package.json`;
+3. `image:<location>:<path>` with `location` in `content` / `static` / `assets` - an SVG source is
+   copied as it is, anything else is wrapped in `<svg viewBox="0 0 24 24"><image href="data:...">`
+   so it can sit in the theme's `<svg fill="currentColor">` box.
+
+2 and 3 are materialised at **save** time into the site's own `assets/icons/`; the value written to
+`menu.toml` is the name that file resolves to. A collision is resolved by **creating a `-2` file,
+never overwriting** (`writeIconFile` uses the `wx` flag), so a hand-drawn icon is safe. A theme icon
+that also exists in Phosphor keeps the theme's (`rss`, `home`, `link`, `search` are in both sets);
+`phosphor-<name>` always means Phosphor.
+
+* `src/settings/socialIcons.js` owns all of it: parsing the value, reading Phosphor/image bytes,
+  unique naming, `iconFileStatus` (`noop` / `create`) and `writeIconFile`.
+* `settingsService.js` resolves icons while **planning** (`resolveIcon`), carries the SVG bytes in
+  the plan, reports them in `preview.icons` (and never writes them there), and writes them only
+  after the config files are safely on disk. `changedFiles` includes icon paths, so a missing icon
+  is reason enough to save even when every value already matches.
+* `themeInfo.phosphorIcons` / `described.theme.phosphorIcons` / `row.phosphorIconOptions` expose the
+  names to the form; `SettingsPanel.vue` merges them into the `stack-icons` datalist and adds a
+  `或从图片里选…` select fed by the existing `/api/assets` listing (a failed fetch only costs the
+  picker).
+* Tests live in `test/settingsSocialIcons.test.js` (fixture sandbox plus the real theme copy, so the
+  Phosphor list is the installed one). Keep the "preview writes nothing" and "no overwrite"
+  assertions if you touch this.
+
+TODO (not done, both small):
+
+* Look at the sidebar in a browser on 1313 with a Phosphor icon and a photo icon: the theme inlines
+  the SVG at its own box size, and a photo inside `<image>` deserves the visual check no test here
+  can make.
+* `scripts/acceptance.mjs` has no step for this yet. It is red for unrelated reasons (deleted demo
+  articles - see the Phase Insert C note); once green, a T-step that saves `phosphor-github-logo`
+  plus one picture on the real site and asserts the built HTML holds both SVGs would be the honest
+  end-to-end gate. This session verified it on a **copy** (`/tmp/hve-icon-verify`) with the real
+  `hugo` binary: exit 0, both SVGs present in `public/index.html`. Phase 9 added **T19** in this
+  style (a `mkdtemp` repo, no contact with the user's repository) - that is the shape to copy.
+
+## Phase 9 notes: the git panel's two halves (staged / unstaged) and one honest commit
+
+Reuse first, as always: this phase added **no new endpoint and no new dependency**. `gitService.js`
+grew a flag, `gitView.js` was extracted from `GitPanel.vue`, and `show()` grew a path. The panel
+still reads one repository and writes exactly one thing - a commit of the paths the user ticked.
+
+* **`staged` and `unstaged` are two questions, not a synonym for "changed".** `parseStatus` keeps
+  the two porcelain columns (`index`, `worktree`) and `classifyStatus` maps them per change:
+  `staged: index !== ' ' && index !== '?'`, `unstaged: worktree !== ' ' && worktree !== '?'`.
+  A file that is `MM` is both; a file staged only is `staged: true, unstaged: false`.
+  **Untracked files are neither** (both columns are `?`) - that is why `counts.unstaged` can be 33
+  while `counts.total` is 36 on the real site: the 3 untracked files have their own kind and their
+  own row badge, and `scopeSwitchAvailable()` hides the scope switch for them because the index
+  side does not exist. Do not "fix" this by counting untracked as unstaged - it would make the
+  counts disagree with the rows.
+* **`GET /api/git/diff?staged=` compares against the literal string `'true'`** (`server/index.js`).
+  `staged=1` is silently read as `false` and you get the worktree diff - which is exactly how a
+  parity script lies to you. The UI sends `staged=${scope === 'staged'}`. The service side is
+  `git diff [--cached] <range> -- <paths>`, so a half that has no changes is an empty patch, not an
+  error; `web/gitView.js` (`emptyScopeHint`) says which half to look at instead.
+* **Clicking a history row is "show me the whole commit".** `show({sha})` runs `git show --format=`
+  (no pathspec) and `show({sha, path})` narrows to one file; the commit's author/date/subject come
+  from a separate `--no-patch` call, which is why the patch text equals `git show --no-color
+  --format= <sha>` and *not* a bare `git show <sha>` (that one carries the header). The patch is
+  **not** scoped to the site prefix: a commit that only touched `editor/` shows its patch with the
+  file marked `outside: true, path: null`, and the panel does not offer a diff it could never
+  produce from the site root.
+* An unknown or rewritten sha is a **state**, not a crash: `show` throws `GitUnknownCommitError`,
+  `classifyRepositoryFailure` does not swallow it, and the server maps it to **409** with
+  `{error, stderr}` (it used to be a 500).
+* Reading is never writing. T19 asserts that `status` / `diff` / `log` / `show` leave `HEAD` and
+  `.git/index` byte-identical, which is the property that lets the panel run on the user's
+  repository at all. Reads also run with `GIT_OPTIONAL_LOCKS=0` / `GIT_TERMINAL_PROMPT=0`; the
+  commit itself is still `git add -- <paths>` + `git commit --no-verify -m <message> -- <paths>`,
+  so an already-staged file that is *not* ticked cannot slip into the commit.
+* `web/gitView.js` is where the panel's decisions live (kind letters, preferred diff scope, counts
+  label, blocked-commit reason, repository notice, empty-scope hint) because there is no jsdom:
+  `test/gitView.test.js` calls them directly, including a cross-check that every kind the service
+  can report has a letter. If you add a kind in `gitService.js`, add the letter or that test fails.
+* **`test/designSystem.test.js` now compiles every `.vue` file** with `@vue/compiler-sfc` (the same
+  compiler vite uses). It exists because this phase introduced exactly the bug it catches: after
+  extracting `preferredScope` into `web/gitView.js`, the local copy stayed behind in `GitPanel.vue`,
+  `node --test` was still green, and only `npm run build:web` failed with *Identifier
+  'preferredScope' has already been declared*. Run `npm run build:web` as well - the test is fast,
+  the build is the authority.
+* Acceptance gained **T19** (Phase 9), in the T18 style: a `mkdtemp` repo **with a site subdirectory
+  and an outside file**, so it can assert the outside file is not listed as a site change and is
+  reported as `outside` in `show`. It covers the two diff halves, the read-does-not-write property,
+  "commit clears both halves", whole-commit vs narrowed `show`, and the 409 mapping - and it never
+  stages or commits anything of the user's.
+
+### The acceptance script's real state (measured 2026-09-30, this session)
+
+`npm run accept` on the **working tree as it stands** stops early, and both stops are the Insert C
+content drift, not Phase 9:
+
+* T14 dies with an uncaught `ENOENT` on `public/p/image-gallery/...`: the 相册 bundle carries an
+  uncommitted `draft: true`, so the page is not published and the scenario's assertion cannot be
+  satisfied by any build. (Proved independent of the editor: a clean `/projects/.bin/hugo` run into
+  a temp destination does not publish `/p/image-gallery/` either.)
+* T15 reads `post/pagination-test-01.en.md`, one of the twelve demo posts the working tree deletes.
+
+With the **committed** site content temporarily restored (`git checkout HEAD -- site`), the same
+script runs end to end: **236 ✅ / 2 ❌**, and T19 is 14/14 ✅. The 2 ❌ are
+`Category 整页删除：4 语言 _index + 1 图片` and its companion - the working tree adds an untracked
+`site/content/categories/Documentation/头像.jpeg`, so the delete plan reports `resources: 2` where
+the fixture says 1. Nothing in that run is a Phase 9 regression, and the working tree was restored
+byte-exactly afterwards (20 files by sha256, the 12 deletions re-applied, 36 site-scoped changes
+back: 21 modified / 12 deleted / 3 untracked). Still the same open decision as Insert C: keep the
+script on the real site (and keep it red until the demo content is reconciled), or point it at a
+fixture copy. Phase 9 makes the second option cheaper - T18/T19 already prove the git layer works
+without touching the user's repository.

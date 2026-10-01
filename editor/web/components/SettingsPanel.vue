@@ -41,6 +41,35 @@ const rawError = ref(null);
 const openOverrides = ref({});
 const newEntry = ref({ identifier: '', name: '', url: '', icon: '', newTab: false });
 
+// Social icons come from three places, and the form shows all three: the theme's own icons (a
+// name), every Phosphor name the installed package holds (a name, `phosphor-<name>`), and a
+// picture the user picks (a path, `image:<location>:<path>` - the service copies/embeds it into
+// the site's `assets/icons/` and writes the name that resolves to it). The picture list is the
+// same `/api/assets` listing the Resources screen shows; a failed fetch only costs the picker.
+const imageOptions = ref([]);
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.avif', '.bmp']);
+
+const iconChoices = computed(() => [
+  ...(settings.value?.theme.icons ?? []),
+  ...(settings.value?.theme.phosphorIcons ?? []).map((name) => `phosphor-${name}`),
+]);
+
+function imageChoicesFrom(listing) {
+  const out = [];
+  const add = (location, where, assets) => {
+    for (const asset of assets ?? []) {
+      const name = asset.filename ?? asset.path ?? '';
+      const dot = name.lastIndexOf('.');
+      if (dot < 0 || !IMAGE_EXTENSIONS.has(name.slice(dot).toLowerCase())) continue;
+      out.push({ value: `image:${location}:${asset.path}`, label: `${where} · ${asset.relativePath ?? asset.path}` });
+    }
+  };
+  for (const bundle of listing?.bundles ?? []) add('content', bundle.bundlePath || '内容根目录', bundle.resources);
+  add('static', '站点静态文件', listing?.static);
+  add('assets', 'Hugo 管线资源', listing?.assets);
+  return out;
+}
+
 const groups = computed(() => settings.value?.groups ?? []);
 const group = computed(() => groups.value.find((item) => item.id === groupId.value) ?? groups.value[0] ?? null);
 const rows = computed(() => (group.value?.settings ?? []).map((id) => settings.value.settings[id]).filter(Boolean));
@@ -66,6 +95,9 @@ async function load() {
     settings.value = await api('/api/settings');
     state.value = initialDrafts(settings.value);
     saveResult.value = null;
+    // The picture picker is a convenience on top of the icon names: if the listing fails, the
+    // screen still works.
+    imageOptions.value = await api('/api/assets').then(imageChoicesFrom).catch(() => []);
   } catch (cause) {
     error.value = cause.message;
   } finally {
@@ -81,6 +113,20 @@ function rowEdited(row) {
 
 function languageEdited(language) {
   return edits.value.set[language.id] !== undefined;
+}
+
+// Choosing a picture writes the same draft the text field does, in the form the service reads:
+// `image:<location>:<path>`. The select resets itself, so picking the same picture twice works.
+function setEntryIcon(row, entry, event) {
+  const value = event.target.value;
+  event.target.value = '';
+  if (value) state.value.drafts[`${row.id}[${entry.index}].params.icon`] = value;
+}
+
+function setNewIcon(event) {
+  const value = event.target.value;
+  event.target.value = '';
+  if (value) newEntry.value.icon = value;
 }
 
 function markedForRemoval(index) {
@@ -345,6 +391,14 @@ async function openRaw(file) {
                     :list="field.key === 'params.icon' ? 'stack-icons' : undefined"
                     type="text"
                   />
+                  <select
+                    v-if="field.key === 'params.icon' && imageOptions.length > 0"
+                    class="icon-image"
+                    @change="setEntryIcon(row, entry, $event)"
+                  >
+                    <option value="">或从图片里选…</option>
+                    <option v-for="image in imageOptions" :key="image.value" :value="image.value">{{ image.label }}</option>
+                  </select>
                 </label>
               </div>
             </div>
@@ -357,7 +411,11 @@ async function openRaw(file) {
                 <label class="menu-field"><span>链接</span><input v-model="newEntry.url" type="text" placeholder="https://…" /></label>
                 <label class="menu-field">
                   <span>图标</span>
-                  <input v-model="newEntry.icon" list="stack-icons" type="text" placeholder="link" />
+                  <input v-model="newEntry.icon" list="stack-icons" type="text" placeholder="link / phosphor-github-logo" />
+                  <select v-if="imageOptions.length > 0" class="icon-image" @change="setNewIcon($event)">
+                    <option value="">或从图片里选…</option>
+                    <option v-for="image in imageOptions" :key="image.value" :value="image.value">{{ image.label }}</option>
+                  </select>
                 </label>
                 <label class="menu-field"><span>新窗口</span><input v-model="newEntry.newTab" type="checkbox" /></label>
               </div>
@@ -369,7 +427,7 @@ async function openRaw(file) {
                 </span>
               </div>
               <datalist id="stack-icons">
-                <option v-for="icon in settings.theme.icons" :key="icon" :value="icon" />
+                <option v-for="icon in iconChoices" :key="icon" :value="icon" />
               </datalist>
             </div>
           </template>
@@ -476,8 +534,12 @@ async function openRaw(file) {
   flex: 1;
 }
 
+/* The page is a row: the group/file nav beside the form. `.view-body.flush` makes its child a
+   column, which stacked the nav and the form and left the settings themselves below the fold;
+   the direction has to be stated here, or the shared class decides it. */
 .settings-body {
   display: flex;
+  flex-direction: row;
   min-height: 0;
   flex: 1;
   overflow: hidden;
@@ -664,6 +726,11 @@ async function openRaw(file) {
   flex-direction: column;
   font-size: var(--text-xs);
   color: var(--text);
+}
+
+/* The picture picker sits under the icon name, not in place of it: the name stays editable. */
+.menu-field .icon-image {
+  margin-top: var(--space-xs);
 }
 
 

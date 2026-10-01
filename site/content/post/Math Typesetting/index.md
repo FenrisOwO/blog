@@ -6,6 +6,7 @@ math: true
 categories:
     - Documentation
 slug: math-typesetting
+draft: true
 ---
 
 Stack 主题支持使用 [KaTeX](https://katex.org/) 渲染数学公式。

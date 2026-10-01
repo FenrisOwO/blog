@@ -37,6 +37,9 @@ export class GitCommandError extends GitError {
     this.stderr = details.stderr ?? '';
   }
 }
+// A reference the history used to hold. Not a crash and not a validation problem: the panel was
+// looking at a list that has since been rewritten (a rebase outside the editor, a fetch).
+export class GitUnknownCommitError extends GitCommandError {}
 
 // Everything this service is allowed to ask git to do: reading, plus one commit.
 export const ALLOWED_SUBCOMMANDS = Object.freeze([
@@ -138,6 +141,21 @@ export function parseNumstat(output) {
   return result;
 }
 
+// Why `rev-parse` could not answer. Git says "not a git repository" and "dubious ownership"
+// in the same tone, but they need opposite advice: one means "no repository here", the other
+// means "there is one, and this user is not allowed to read it". Classifying is all this does -
+// the wording the user sees belongs to the UI.
+export function classifyRepositoryFailure(reason) {
+  const text = String(reason ?? '');
+  if (/dubious ownership/i.test(text)) {
+    const match = /repository at '([^']+)'/.exec(text);
+    return { code: 'dubious-ownership', directory: match ? match[1] : null };
+  }
+  if (/not a git repository/i.test(text)) return { code: 'not-a-repository', directory: null };
+  if (/no such file or directory|not found|ENOENT/i.test(text)) return { code: 'git-missing', directory: null };
+  return { code: 'unknown', directory: null };
+}
+
 export function createGitService({
   siteRoot,
   gitBin = 'git',
@@ -209,7 +227,14 @@ export function createGitService({
 
     const probe = await run(['rev-parse', '--show-toplevel', '--absolute-git-dir'], { allowFailure: true });
     if (probe.code !== 0 || probe.stdout.trim() === '') {
-      cached = { repository: null, reason: probe.stderr.trim() || 'not a git repository' };
+      const reason = probe.stderr.trim() || 'not a git repository';
+      const classified = classifyRepositoryFailure(reason);
+      cached = {
+        repository: null,
+        reason,
+        reasonCode: classified.code,
+        reasonDirectory: classified.directory,
+      };
       cachedAt = now;
       return cached;
     }
@@ -236,6 +261,8 @@ export function createGitService({
         head: headProbe.code === 0 ? headProbe.stdout.trim() : null,
       },
       reason: null,
+      reasonCode: null,
+      reasonDirectory: null,
     };
     cachedAt = now;
     return cached;
@@ -263,9 +290,19 @@ export function createGitService({
   }
 
   async function status({ paths = null } = {}) {
-    const { repository, reason } = await detectRepository();
+    const { repository, reason, reasonCode, reasonDirectory } = await detectRepository();
     if (!repository) {
-      return { repository: null, reason, branch: null, head: null, clean: true, changes: [], counts: { total: 0 } };
+      return {
+        repository: null,
+        reason,
+        reasonCode,
+        reasonDirectory,
+        branch: null,
+        head: null,
+        clean: true,
+        changes: [],
+        counts: { total: 0, staged: 0, unstaged: 0 },
+      };
     }
 
     const args = ['status', '--porcelain=v1', '-z', '--untracked-files=all'];
@@ -284,7 +321,10 @@ export function createGitService({
         kind: classifyStatus(entry),
         index: entry.index,
         worktree: entry.worktree,
+        // The two halves of `XY`: the index (what a commit would take *now*) and the worktree
+        // (what the editor still has to stage). A file can be both, or only one.
         staged: entry.index !== ' ' && entry.index !== '?',
+        unstaged: entry.worktree !== ' ' && entry.worktree !== '?',
         originalPath: entry.originalPath ? toSitePath(repository, entry.originalPath) : null,
       });
     }
@@ -305,11 +345,20 @@ export function createGitService({
     return {
       repository,
       reason: null,
+      reasonCode: null,
+      reasonDirectory: null,
       branch: repository.branch,
       head: repository.head,
       clean: changes.length === 0,
       changes,
-      counts: { ...counts, total: changes.length },
+      counts: {
+        ...counts,
+        // Staged against unstaged is a different question from which kind of change it is:
+        // one file can be both, which is why these are counted separately from the kinds.
+        staged: changes.filter((change) => change.staged).length,
+        unstaged: changes.filter((change) => change.unstaged).length,
+        total: changes.length,
+      },
     };
   }
 
@@ -401,20 +450,20 @@ export function createGitService({
       { allowFailure: true },
     );
     if (meta.code !== 0) {
-      throw new GitCommandError(`unknown commit: ${sha}`, { args: ['show', sha], stderr: meta.stderr.trim() });
+      throw new GitUnknownCommitError(`unknown commit: ${sha}`, { args: ['show', sha], stderr: meta.stderr.trim() });
     }
 
     const [commitSha, author, email, date, subject, body] = meta.stdout.split('\x1f');
     const stats = await run(['show', '--no-color', '--numstat', '--format=', sha], { allowFailure: true });
     const parsed = parseNumstat(stats.stdout);
 
-    let text = '';
-    if (path) {
-      const patch = await run(['show', '--no-color', '--format=', sha, '--', toArgPath(path)], {
-        allowFailure: true,
-      });
-      text = patch.stdout;
-    }
+    // With no path this is the whole commit, which is what clicking a history row means; with a
+    // path the panel is narrowing to one file. Either way git produces the patch - nothing here
+    // compares file contents itself.
+    const patchArgs = path
+      ? ['show', '--no-color', '--format=', sha, '--', toArgPath(path)]
+      : ['show', '--no-color', '--format=', sha];
+    const patch = await run(patchArgs, { allowFailure: true });
 
     return {
       repository,
@@ -426,14 +475,22 @@ export function createGitService({
         subject,
         body: (body ?? '').replaceAll('\x1e', '').trim(),
       },
-      files: parsed.files.map((file) => ({
-        ...file,
-        path: toSitePath(repository, file.path) ?? file.path,
-      })),
+      // A commit can also touch files outside the site (the repository may be larger than the
+      // site): those keep their repository-relative path, are marked `outside`, and the UI shows
+      // them without offering a diff it could never produce from the site root.
+      files: parsed.files.map((file) => {
+        const sitePath = toSitePath(repository, file.path);
+        return {
+          ...file,
+          path: sitePath,
+          repoPath: normalizeRelPath(file.path),
+          outside: sitePath === null,
+        };
+      }),
       binary: parsed.binary,
       additions: parsed.additions,
       deletions: parsed.deletions,
-      text,
+      text: patch.stdout,
     };
   }
 

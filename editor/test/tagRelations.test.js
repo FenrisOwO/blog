@@ -1,13 +1,12 @@
 // Phase 7: tags as a cross-document object.
 //
-// Every test runs on a throwaway copy of the real site's content tree, with the real
-// `documentService` (so the walk, the cache and PathGuard are the ones the editor uses) and the
-// real transaction. Nothing here is a mock: a rename that works here works on the site, which is
-// exactly why the site itself is never the fixture.
+// Every test runs on a throwaway copy of the fixture corpus (test/fixtures/README.md), with the
+// real `documentService` (so the walk, the cache and PathGuard are the ones the editor uses) and
+// the real transaction. Nothing here is a mock: a rename that works here works on the site, which
+// is exactly why the tests declare their own documents instead of reading the user's.
 
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -16,27 +15,24 @@ import { createDocumentService } from '../src/site/documentService.js';
 import { createRelationService } from '../src/relations/relationService.js';
 import { TagConflictError } from '../src/relations/relationService.js';
 import { normalizeTagIdentity, planTagListChanges, suggestTagSlug, validateTagDirectoryName } from '../src/relations/tagModel.js';
+import { FIXTURE, makeFixtureSandbox } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
 const SECTIONS = ['post', 'page', 'categories', ''];
 
-// A copy of the real content tree: the fixture is the site, so a passing test means the site's
-// own shapes (four-space lists, two-space lists, four languages, a case-colliding tag) are
-// handled.
-function makeFixture() {
-  const root = mkdtempSync(join(tmpdir(), 'relations-'));
-  cpSync(join(SITE_ROOT, 'content'), join(root, 'content'), { recursive: true });
-  cpSync(join(SITE_ROOT, 'config'), join(root, 'config'), { recursive: true });
-  const backupRoot = join(root, '.backups');
-  mkdirSync(backupRoot, { recursive: true });
+// The fixture corpus is deliberately small, so its vocabulary is a fact to read from the documents
+// themselves (see `tagVocabulary` below): three used identities - `fixture` (with the `Fixture`
+// spelling), `alpha` (both languages of fixture-article) and `markdown`/`Markdown` - plus one
+// metadata page, `tags/fixture-tag/_index.md`, whose term no document uses.
+function makeFixture(t) {
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-tags-' });
   const documentService = createDocumentService({
-    contentRoot: join(root, 'content'),
-    siteRoot: root,
+    contentRoot: sandbox.contentRoot,
+    siteRoot: sandbox.siteRoot,
     sections: SECTIONS,
-    backupRoot,
+    backupRoot: sandbox.backupRoot,
   });
-  const relations = createRelationService({ documentService, backupRoot });
-  return { root, backupRoot, documentService, relations, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+  const relations = createRelationService({ documentService, backupRoot: sandbox.backupRoot });
+  return { ...sandbox, documentService, relations };
 }
 
 function sha256(value) {
@@ -54,9 +50,9 @@ function treeFingerprint(dir, base = dir, out = {}) {
   return out;
 }
 
-// The fixture is a copy of the user's site, so its vocabulary is a fact to read, not a constant to
-// pin: the person who owns the site keeps writing in it. An identity is case-insensitive (that is
-// the property under test), a name is one spelling of it, and a usage is one document carrying it.
+// The fixture's vocabulary is a fact to read from the documents, not a constant to pin: an
+// identity is case-insensitive (that is the property under test), a name is one spelling of it,
+// and a usage is one document carrying it.
 function tagVocabulary(dir, base = dir, out = new Map()) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const abs = join(dir, entry.name);
@@ -86,276 +82,237 @@ function diffFingerprints(before, after) {
   return changed.sort();
 }
 
-test('the tag index comes from the real tree: usage, spellings and languages', async () => {
-  const fixture = makeFixture();
-  try {
-    const { tags, termPages } = await fixture.relations.listTags();
-    const byName = new Map(tags.map((tag) => [tag.name, tag]));
+test('the tag index comes from the fixture tree: usage, spellings and languages', async (t) => {
+  const fixture = makeFixture(t);
+  const { tags, termPages } = await fixture.relations.listTags();
+  const byName = new Map(tags.map((tag) => [tag.name, tag]));
 
-    // The index has to agree with the documents: one identity per case-insensitive spelling, one
-    // name per spelling, one usage per document that carries it. Counting from the front matter
-    // keeps that true when an article is added - `markdown` and `Markdown` are still one tag, and
-    // the index still reports them as one, which is what this test is for.
-    const vocabulary = tagVocabulary(join(fixture.root, 'content'));
-    const spellings = [...vocabulary.values()].reduce((total, entry) => total + entry.names.size, 0);
-    assert.equal(tags.length, vocabulary.size, `unexpected tag count: ${tags.map((tag) => tag.name).join(', ')}`);
-    assert.equal(tags.flatMap((tag) => tag.names).length, spellings);
-    for (const name of ['pagination', 'test', 'Gallery', '隐私', 'themes']) {
-      assert.equal(byName.get(name).usage, vocabulary.get(name.toLowerCase()).docs.size, `${name} usage`);
-    }
-    assert.deepEqual(byName.get('隐私').languages, ['ja', 'zh', 'zh-hant-tw']);
-
-    // `markdown` and `Markdown` are one Hugo term, and the index says so instead of showing two
-    // unrelated tags.
-    const markdown = byName.get('markdown');
-    assert.equal(markdown.usage, vocabulary.get('markdown').docs.size);
-    assert.deepEqual(markdown.names.map((entry) => entry.name).sort(), ['Markdown', 'markdown']);
-    assert.equal(markdown.conflicts.length, 1);
-    assert.equal(markdown.conflicts[0].type, 'spelling');
-
-    // The site has no content/tags, so no tag has a metadata page - and (this is the part that
-    // matters) nothing is reported as missing one.
-    assert.deepEqual(termPages, []);
-    assert.equal(tags.every((tag) => tag.metadataPages.length === 0), true);
-  } finally {
-    fixture.cleanup();
+  // The index has to agree with the documents: one identity per case-insensitive spelling, one
+  // name per spelling, one usage per document that carries it. `markdown` and `Markdown` are still
+  // one tag, and the index reports them as one, which is what this test is for.
+  const vocabulary = tagVocabulary(fixture.contentRoot);
+  const spellings = [...vocabulary.values()].reduce((total, entry) => total + entry.names.size, 0);
+  // The fixture also ships one metadata page (tags/fixture-tag/_index.md) for a term no document
+  // uses: the index carries it as an orphan, so compare the document-backed tags only.
+  const documentTags = tags.filter((tag) => !tag.orphan);
+  assert.equal(documentTags.length, vocabulary.size, `unexpected tag count: ${tags.map((tag) => tag.name).join(', ')}`);
+  assert.equal(documentTags.flatMap((tag) => tag.names).length, spellings);
+  for (const name of ['fixture', 'alpha', 'markdown']) {
+    assert.equal(byName.get(name).usage, vocabulary.get(name.toLowerCase()).docs.size, `${name} usage`);
   }
+  // `alpha` is the tag the fixture uses in two languages (fixture-article.md and its .en.md).
+  assert.deepEqual(byName.get('alpha').languages, ['en', 'zh']);
+
+  // `markdown` and `Markdown` are one Hugo term, and the index says so instead of showing two
+  // unrelated tags.
+  const markdown = byName.get('markdown');
+  assert.equal(markdown.usage, vocabulary.get('markdown').docs.size);
+  assert.deepEqual(markdown.names.map((entry) => entry.name).sort(), ['Markdown', 'markdown']);
+  assert.equal(markdown.conflicts.length, 1);
+  assert.equal(markdown.conflicts[0].type, 'spelling');
+
+  // The orphan metadata page is reported as such - usage 0, its own file named - and it is the
+  // only metadata page in the corpus.
+  const orphan = byName.get('fixture-tag');
+  assert.equal(orphan.orphan, true);
+  assert.equal(orphan.usage, 0);
+  assert.equal(orphan.metadataPath, FIXTURE.tagPage);
+  assert.deepEqual(termPages.map((page) => page.dir), ['fixture-tag']);
+  assert.equal(tags.filter((tag) => tag.metadataPages.length > 0).length, 1);
 });
 
-test('tag detail lists the documents, grouped by translation key', async () => {
-  const fixture = makeFixture();
-  try {
-    const detail = await fixture.relations.tagDetail({ name: 'markdown' });
-    assert.equal(detail.usage, 3);
-    assert.deepEqual(detail.spellings.sort(), ['Markdown', 'markdown']);
-    // The default language of this site is zh, so the unsuffixed file is a zh document.
-    assert.deepEqual(detail.languages, ['en', 'zh']);
-    assert.ok(detail.documents.some((document) => document.path === 'post/Markdown Syntax/index.en.md'));
-    assert.ok(detail.documents.some((document) => document.path === 'post/mermaid-diagrams/index.en.md'));
+test('tag detail lists the documents, grouped by translation key', async (t) => {
+  const fixture = makeFixture(t);
+  const detail = await fixture.relations.tagDetail({ name: 'markdown' });
+  assert.equal(detail.usage, 2);
+  assert.deepEqual(detail.spellings.sort(), ['Markdown', 'markdown']);
+  // The default language of the fixture is zh, so the unsuffixed file is a zh document.
+  assert.deepEqual(detail.languages, ['en', 'zh']);
+  assert.ok(detail.documents.some((document) => document.path === FIXTURE.markdown));
+  assert.ok(detail.documents.some((document) => document.path === FIXTURE.markdownZh));
 
-    const shortcodes = await fixture.relations.tagDetail({ name: '隐私' });
-    assert.equal(shortcodes.usage, 3);
-    assert.deepEqual(shortcodes.languages, ['ja', 'zh', 'zh-hant-tw']);
-    // Three languages of one page share a translation key: one group, three members.
-    assert.equal(shortcodes.groups.length, 1);
-    assert.equal(shortcodes.groups[0].members.length, 3);
-  } finally {
-    fixture.cleanup();
-  }
+  const alpha = await fixture.relations.tagDetail({ name: 'alpha' });
+  assert.equal(alpha.usage, 2);
+  assert.deepEqual(alpha.languages, ['en', 'zh']);
+  // Two languages of one page share a translation key: one group, two members.
+  assert.equal(alpha.groups.length, 1);
+  assert.equal(alpha.groups[0].members.length, 2);
 });
 
-test('a rename onto an existing tag is a conflict, not a silent merge', async () => {
-  const fixture = makeFixture();
+test('a rename onto an existing tag is a conflict, not a silent merge', async (t) => {
+  const fixture = makeFixture(t);
+  await assert.rejects(
+    () => fixture.relations.planTagRename({ from: 'alpha', to: 'fixture' }),
+    (error) => error instanceof TagConflictError && /合并/.test(error.message),
+  );
+});
+
+test('merging a tag rewrites every reference and writes nothing else', async (t) => {
+  const fixture = makeFixture(t);
+  const before = treeFingerprint(fixture.contentRoot);
+  const plan = await fixture.relations.planTagRename({ from: 'alpha', to: 'beta', mode: 'merge' });
+
+  assert.equal(plan.changeSet.counts.modify, 2);
+  assert.equal(plan.changeSet.counts.create, 0);
+  assert.equal(plan.changeSet.counts.delete, 0);
+  assert.equal(plan.review.ok, true);
+  // The diff body is exactly the one line that changed, in both directions.
+  const diffBody = plan.changeSet.changes[0].diffText.split('\n').slice(2);
+  assert.deepEqual(diffBody, ['-   - alpha', '+   - beta']);
+
+  // Nothing has been written by planning.
+  assert.deepEqual(diffFingerprints(before, treeFingerprint(fixture.contentRoot)), []);
+
+  const result = fixture.relations.apply(plan);
+  assert.equal(result.status, 'committed');
+  assert.equal(result.applied.length, 2);
+
+  const after = treeFingerprint(fixture.contentRoot);
+  assert.deepEqual(diffFingerprints(before, after), plan.changeSet.changes.map((change) => change.relPath).sort());
+
+  const text = readFileSync(join(fixture.contentRoot, FIXTURE.article), 'utf8');
+  assert.match(text, /tags:\n {2}- fixture\n {2}- beta\n/);
+  assert.match(text, /draft: false/);
+});
+
+test('a rename keeps every language of a translation group in step', async (t) => {
+  const fixture = makeFixture(t);
+  const plan = await fixture.relations.planTagRename({ from: 'alpha', to: 'alpha (中文)' });
+  assert.equal(plan.changeSet.counts.modify, 2);
+  const paths = plan.changeSet.changes.map((change) => change.relPath).sort();
+  assert.deepEqual(paths, [FIXTURE.article, FIXTURE.articleZh].sort());
+
+  fixture.relations.apply(plan);
+  const en = readFileSync(join(fixture.contentRoot, FIXTURE.article), 'utf8');
+  assert.match(en, /tags:\n {2}- fixture\n {2}- alpha \(中文\)\n/);
+});
+
+test('merging two spellings of one tag drops the duplicate line instead of writing it twice', async (t) => {
+  const fixture = makeFixture(t);
+  const path = join(fixture.contentRoot, FIXTURE.markdown);
+  // The fixture carries `markdown` (zh) and `Markdown` (en); make the en document carry both
+  // spellings - the case the merge exists for.
+  writeFileSync(path, readFileSync(path, 'utf8').replace('  - Markdown\n', '  - Markdown\n  - markdown\n'));
+
+  const plan = await fixture.relations.planTagRename({ from: 'markdown', to: 'Markdown', mode: 'merge' });
+  assert.equal(plan.changeSet.counts.modify, 2);
+  fixture.relations.apply(plan);
+
+  const text = readFileSync(path, 'utf8');
+  assert.equal(text.match(/^ {2}- Markdown$/gm).length, 1);
+  assert.ok(!/^ {2}- markdown$/m.test(text));
+  // The other language of the same page was rewritten too, from `markdown` to `Markdown`.
+  assert.match(readFileSync(join(fixture.contentRoot, FIXTURE.markdownZh), 'utf8'), /^ {2}- Markdown$/m);
+});
+
+test('editing one document adds, removes and replaces tags surgically', async (t) => {
+  const fixture = makeFixture(t);
+  const path = FIXTURE.article;
+  const abs = join(fixture.contentRoot, path);
+  const before = readFileSync(abs, 'utf8');
+
+  const plan = await fixture.relations.planTagEdit({ path, add: ['beta'], remove: ['alpha'], replace: [{ from: 'fixture', to: 'Fixture' }] });
+  assert.equal(plan.changeSet.counts.modify, 1);
+  assert.deepEqual(plan.skipped, []);
+
+  fixture.relations.apply(plan);
+  const after = readFileSync(abs, 'utf8');
+  assert.equal(after, before.replace('  - fixture\n  - alpha\n', '  - Fixture\n  - beta\n'));
+
+  // A second identical edit is a no-op, and a no-op never reaches the disk.
+  const again = await fixture.relations.planTagEdit({ path, add: ['beta'], remove: ['alpha'], replace: [{ from: 'Fixture', to: 'Fixture' }] });
+  assert.equal(again.changeSet.counts.total, 0);
+  assert.equal(again.changeSet.noop, true);
+  // Only the add is refused; the replace of a tag the document no longer has is not an
+  // error, because the document is already in the target state.
+  assert.equal(again.skipped.length, 1);
+  assert.equal(again.skipped[0].reason.includes('已存在'), true);
+  assert.equal(readFileSync(abs, 'utf8'), after);
+});
+
+test('adding a tag that is already there is refused with a reason, not written twice', async (t) => {
+  const fixture = makeFixture(t);
+  const plan = await fixture.relations.planTagEdit({ path: FIXTURE.article, add: ['ALPHA'] });
+  assert.equal(plan.changeSet.counts.total, 0);
+  assert.equal(plan.skipped[0].reason.includes('已存在'), true);
+});
+
+test('a tag metadata page moves with its tag, byte for byte', async (t) => {
+  const fixture = makeFixture(t);
+  const pageDir = join(fixture.contentRoot, 'tags', 'alpha');
+  mkdirSync(pageDir, { recursive: true });
+  const pageText = '---\ntitle: alpha\n# a comment the editor must not lose\ndescription: "照片集"\n---\n\n正文\n';
+  writeFileSync(join(pageDir, '_index.md'), pageText);
+  writeFileSync(join(pageDir, '_index.en.md'), '---\ntitle: alpha\n---\n');
+  writeFileSync(join(pageDir, 'cover.jpg'), 'not really a jpeg');
+
+  const plan = await fixture.relations.planTagRename({ from: 'alpha', to: 'alpha 相册' });
+  assert.equal(plan.changeSet.counts.modify, 2); // fixture-article.{md,en.md}
+  assert.equal(plan.changeSet.counts.move, 2); // _index.md and _index.en.md, not cover.jpg
+  assert.equal(plan.review.ok, true);
+
+  fixture.relations.apply(plan);
+
+  assert.equal(readFileSync(join(fixture.contentRoot, 'tags', 'alpha 相册', '_index.md'), 'utf8'), pageText);
+  assert.equal(existsSync(join(fixture.contentRoot, 'tags', 'alpha', '_index.md')), false);
+  // The resource beside the page is not the editor's to move.
+  assert.equal(existsSync(join(fixture.contentRoot, 'tags', 'alpha', 'cover.jpg')), true);
+  assert.equal(readFileSync(join(fixture.contentRoot, FIXTURE.articleZh), 'utf8').includes('- alpha 相册'), true);
+});
+
+test('a merge never overwrites an existing metadata page: it says so and defers', async (t) => {
+  const fixture = makeFixture(t);
+  mkdirSync(join(fixture.contentRoot, 'tags', 'alpha'), { recursive: true });
+  mkdirSync(join(fixture.contentRoot, 'tags', 'fixture'), { recursive: true });
+  writeFileSync(join(fixture.contentRoot, 'tags', 'alpha', '_index.md'), '---\ntitle: alpha\n---\n');
+  writeFileSync(join(fixture.contentRoot, 'tags', 'fixture', '_index.md'), '---\ntitle: fixture\n---\n');
+
+  const plan = await fixture.relations.planTagRename({ from: 'alpha', to: 'fixture', mode: 'merge' });
+  assert.equal(plan.changeSet.counts.move, 0);
+  assert.equal(plan.changeSet.warnings.some((warning) => warning.includes('元数据页合并本阶段暂不支持')), true);
+
+  fixture.relations.apply(plan);
+  assert.equal(readFileSync(join(fixture.contentRoot, 'tags', 'alpha', '_index.md'), 'utf8'), '---\ntitle: alpha\n---\n');
+});
+
+test('a tag name that cannot be a directory is refused for metadata pages, with a slug offered', async (t) => {
+  const fixture = makeFixture(t);
+  mkdirSync(join(fixture.contentRoot, 'tags', 'alpha'), { recursive: true });
+  writeFileSync(join(fixture.contentRoot, 'tags', 'alpha', '_index.md'), '---\ntitle: alpha\n---\n');
+
+  const plan = await fixture.relations.planTagRename({ from: 'alpha', to: '../escape' });
+  assert.equal(plan.changeSet.counts.move, 0);
+  assert.equal(plan.changeSet.warnings.some((warning) => warning.includes('不能作为目录名')), true);
+
+  // Creating a page for an unsafe name is refused outright.
+  await assert.rejects(() => fixture.relations.planTagPageCreate({ name: '../escape' }), /不能作为目录名/);
+  assert.equal(existsSync(join(fixture.contentRoot, 'escape', '_index.md')), false);
+  assert.equal(existsSync(join(fixture.contentRoot, 'tags', '..', 'escape', '_index.md')), false);
+
+  const created = await fixture.relations.planTagPageCreate({ name: 'Hugo Editor' });
+  assert.equal(created.changeSet.counts.create, 1);
+  fixture.relations.apply(created);
+  assert.equal(existsSync(join(fixture.contentRoot, 'tags', 'Hugo Editor', '_index.md')), true);
+});
+
+test('an orphan term page (no document uses the tag) shows in the index as usage 0', async (t) => {
+  const fixture = makeFixture(t);
+  mkdirSync(join(fixture.contentRoot, 'tags', 'Abandoned'), { recursive: true });
+  writeFileSync(join(fixture.contentRoot, 'tags', 'Abandoned', '_index.md'), '---\ntitle: Abandoned\n---\n');
+
+  const { tags } = await fixture.relations.listTags();
+  const orphan = tags.find((tag) => tag.name === 'Abandoned');
+  assert.ok(orphan);
+  assert.equal(orphan.usage, 0);
+  assert.equal(orphan.orphan, true);
+  assert.equal(orphan.metadataPath, 'tags/Abandoned/_index.md');
+});
+
+test('a rename of a tag inside a document with no tags field is refused, not invented', async (t) => {
+  const fixture = makeFixture(t);
   try {
     await assert.rejects(
-      () => fixture.relations.planTagRename({ from: 'test', to: 'pagination' }),
-      (error) => error instanceof TagConflictError && /合并/.test(error.message),
-    );
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('merging a tag rewrites every reference and writes nothing else', async () => {
-  const fixture = makeFixture();
-  try {
-    const before = treeFingerprint(join(fixture.root, 'content'));
-    const plan = await fixture.relations.planTagRename({ from: 'test', to: 'testing', mode: 'merge' });
-
-    assert.equal(plan.changeSet.counts.modify, 12);
-    assert.equal(plan.changeSet.counts.create, 0);
-    assert.equal(plan.changeSet.counts.delete, 0);
-    assert.equal(plan.review.ok, true);
-    // The diff body is exactly the one line that changed, in both directions.
-    const diffBody = plan.changeSet.changes[0].diffText.split('\n').slice(2);
-    assert.deepEqual(diffBody, ['-   - test', '+   - testing']);
-
-    // Nothing has been written by planning.
-    assert.deepEqual(diffFingerprints(before, treeFingerprint(join(fixture.root, 'content'))), []);
-
-    const result = fixture.relations.apply(plan);
-    assert.equal(result.status, 'committed');
-    assert.equal(result.applied.length, 12);
-
-    const after = treeFingerprint(join(fixture.root, 'content'));
-    assert.deepEqual(diffFingerprints(before, after), plan.changeSet.changes.map((change) => change.relPath).sort());
-
-    const text = readFileSync(join(fixture.root, 'content', 'post', 'pagination-test-01.en.md'), 'utf8');
-    assert.match(text, /tags:\n {2}- pagination\n {2}- testing\n/);
-    assert.match(text, /draft: false/);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('a rename keeps every language of a translation group in step', async () => {
-  const fixture = makeFixture();
-  try {
-    const plan = await fixture.relations.planTagRename({ from: '隐私', to: 'privacy (中文)' });
-    assert.equal(plan.changeSet.counts.modify, 3);
-    const paths = plan.changeSet.changes.map((change) => change.relPath).sort();
-    assert.deepEqual(paths, ['post/shortcodes/index.ja.md', 'post/shortcodes/index.md', 'post/shortcodes/index.zh-hant-tw.md']);
-
-    fixture.relations.apply(plan);
-    const ja = readFileSync(join(fixture.root, 'content', 'post', 'shortcodes', 'index.ja.md'), 'utf8');
-    assert.match(ja, /tags:\n {4}- privacy \(中文\)\n/);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('merging two spellings of one tag drops the duplicate line instead of writing it twice', async () => {
-  const fixture = makeFixture();
-  try {
-    const path = join(fixture.root, 'content', 'post', 'Markdown Syntax', 'index.en.md');
-    // A document that carries both spellings - the case the merge exists for.
-    writeFileSync(path, readFileSync(path, 'utf8').replace('    - themes\n', '    - themes\n    - Themes\n'));
-
-    const plan = await fixture.relations.planTagRename({ from: 'themes', to: 'Themes', mode: 'merge' });
-    assert.equal(plan.changeSet.counts.modify, 2);
-    fixture.relations.apply(plan);
-
-    const text = readFileSync(path, 'utf8');
-    assert.equal(text.match(/^ {4}- Themes$/gm).length, 1);
-    assert.ok(!/^ {4}- themes$/m.test(text));
-    // The other language of the same page was rewritten too, from `themes` to `Themes`.
-    assert.match(readFileSync(join(fixture.root, 'content', 'post', 'Markdown Syntax', 'index.md'), 'utf8'), /^ {4}- Themes$/m);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('editing one document adds, removes and replaces tags surgically', async () => {
-  const fixture = makeFixture();
-  try {
-    const path = 'post/pagination-test-01.en.md';
-    const before = readFileSync(join(fixture.root, 'content', path), 'utf8');
-
-    const plan = await fixture.relations.planTagEdit({ path, add: ['acceptance'], remove: ['test'], replace: [{ from: 'pagination', to: 'Pagination' }] });
-    assert.equal(plan.changeSet.counts.modify, 1);
-    assert.deepEqual(plan.skipped, []);
-
-    fixture.relations.apply(plan);
-    const after = readFileSync(join(fixture.root, 'content', path), 'utf8');
-    assert.equal(after, before.replace('  - pagination\n  - test\n', '  - Pagination\n  - acceptance\n'));
-
-    // A second identical edit is a no-op, and a no-op never reaches the disk.
-    const again = await fixture.relations.planTagEdit({ path, add: ['acceptance'], remove: ['test'], replace: [{ from: 'Pagination', to: 'Pagination' }] });
-    assert.equal(again.changeSet.counts.total, 0);
-    assert.equal(again.changeSet.noop, true);
-    // Only the add is refused; the replace of a tag the document no longer has is not an
-    // error, because the document is already in the target state.
-    assert.equal(again.skipped.length, 1);
-    assert.equal(again.skipped[0].reason.includes('已存在'), true);
-    assert.equal(readFileSync(join(fixture.root, 'content', path), 'utf8'), after);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('adding a tag that is already there is refused with a reason, not written twice', async () => {
-  const fixture = makeFixture();
-  try {
-    const plan = await fixture.relations.planTagEdit({ path: 'post/pagination-test-02.en.md', add: ['TEST'] });
-    assert.equal(plan.changeSet.counts.total, 0);
-    assert.equal(plan.skipped[0].reason.includes('已存在'), true);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('a tag metadata page moves with its tag, byte for byte', async () => {
-  const fixture = makeFixture();
-  try {
-    const pageDir = join(fixture.root, 'content', 'tags', 'Gallery');
-    mkdirSync(pageDir, { recursive: true });
-    const pageText = '---\ntitle: Gallery\n# a comment the editor must not lose\ndescription: "照片集"\n---\n\n正文\n';
-    writeFileSync(join(pageDir, '_index.md'), pageText);
-    writeFileSync(join(pageDir, '_index.en.md'), '---\ntitle: Gallery\n---\n');
-    writeFileSync(join(pageDir, 'cover.jpg'), 'not really a jpeg');
-
-    const plan = await fixture.relations.planTagRename({ from: 'Gallery', to: 'Gallery 相册' });
-    assert.equal(plan.changeSet.counts.modify, 4); // Image Gallery index.{,en,ja,zh-hant-tw}.md
-    assert.equal(plan.changeSet.counts.move, 2); // _index.md and _index.en.md, not cover.jpg
-    assert.equal(plan.review.ok, true);
-
-    fixture.relations.apply(plan);
-
-    assert.equal(readFileSync(join(fixture.root, 'content', 'tags', 'Gallery 相册', '_index.md'), 'utf8'), pageText);
-    assert.equal(existsSync(join(fixture.root, 'content', 'tags', 'Gallery', '_index.md')), false);
-    // The resource beside the page is not the editor's to move.
-    assert.equal(existsSync(join(fixture.root, 'content', 'tags', 'Gallery', 'cover.jpg')), true);
-    assert.equal(readFileSync(join(fixture.root, 'content', 'post', 'Image Gallery', 'index.md'), 'utf8').includes('- Gallery 相册'), true);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('a merge never overwrites an existing metadata page: it says so and defers', async () => {
-  const fixture = makeFixture();
-  try {
-    mkdirSync(join(fixture.root, 'content', 'tags', 'Photoswipe'), { recursive: true });
-    mkdirSync(join(fixture.root, 'content', 'tags', 'Gallery'), { recursive: true });
-    writeFileSync(join(fixture.root, 'content', 'tags', 'Photoswipe', '_index.md'), '---\ntitle: Photoswipe\n---\n');
-    writeFileSync(join(fixture.root, 'content', 'tags', 'Gallery', '_index.md'), '---\ntitle: Gallery\n---\n');
-
-    const plan = await fixture.relations.planTagRename({ from: 'Photoswipe', to: 'Gallery', mode: 'merge' });
-    assert.equal(plan.changeSet.counts.move, 0);
-    assert.equal(plan.changeSet.warnings.some((warning) => warning.includes('元数据页合并本阶段暂不支持')), true);
-
-    fixture.relations.apply(plan);
-    assert.equal(readFileSync(join(fixture.root, 'content', 'tags', 'Photoswipe', '_index.md'), 'utf8'), '---\ntitle: Photoswipe\n---\n');
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('a tag name that cannot be a directory is refused for metadata pages, with a slug offered', async () => {
-  const fixture = makeFixture();
-  try {
-    mkdirSync(join(fixture.root, 'content', 'tags', 'Gallery'), { recursive: true });
-    writeFileSync(join(fixture.root, 'content', 'tags', 'Gallery', '_index.md'), '---\ntitle: Gallery\n---\n');
-
-    const plan = await fixture.relations.planTagRename({ from: 'Gallery', to: '../escape' });
-    assert.equal(plan.changeSet.counts.move, 0);
-    assert.equal(plan.changeSet.warnings.some((warning) => warning.includes('不能作为目录名')), true);
-
-    // Creating a page for an unsafe name is refused outright.
-    await assert.rejects(() => fixture.relations.planTagPageCreate({ name: '../escape' }), /不能作为目录名/);
-    assert.equal(existsSync(join(fixture.root, 'content', 'escape', '_index.md')), false);
-    assert.equal(existsSync(join(fixture.root, 'content', 'tags', '..', 'escape', '_index.md')), false);
-
-    const created = await fixture.relations.planTagPageCreate({ name: 'Hugo Editor' });
-    assert.equal(created.changeSet.counts.create, 1);
-    fixture.relations.apply(created);
-    assert.equal(existsSync(join(fixture.root, 'content', 'tags', 'Hugo Editor', '_index.md')), true);
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('an orphan term page (no document uses the tag) shows in the index as usage 0', async () => {
-  const fixture = makeFixture();
-  try {
-    mkdirSync(join(fixture.root, 'content', 'tags', 'Abandoned'), { recursive: true });
-    writeFileSync(join(fixture.root, 'content', 'tags', 'Abandoned', '_index.md'), '---\ntitle: Abandoned\n---\n');
-
-    const { tags } = await fixture.relations.listTags();
-    const orphan = tags.find((tag) => tag.name === 'Abandoned');
-    assert.ok(orphan);
-    assert.equal(orphan.usage, 0);
-    assert.equal(orphan.orphan, true);
-    assert.equal(orphan.metadataPath, 'tags/Abandoned/_index.md');
-  } finally {
-    fixture.cleanup();
-  }
-});
-
-test('a rename of a tag inside a document with no tags field is refused, not invented', async () => {
-  const fixture = makeFixture();
-  try {
-    await assert.rejects(
-      () => fixture.relations.planTagEdit({ path: 'post/mermaid-diagrams/index.en.md', add: [], remove: [], replace: [{ from: 'nope', to: 'x' }] }),
+      () => fixture.relations.planTagEdit({ path: FIXTURE.page, add: [], remove: [], replace: [{ from: 'nope', to: 'x' }] }),
       /没有这个标签/,
     ).catch((error) => {
       // planTagEdit does not throw for an unmatched replace: it reports it as skipped, which is
@@ -366,8 +323,6 @@ test('a rename of a tag inside a document with no tags field is refused, not inv
   } catch {
     // The reject above is the expected path only when it really rejects; the assertion below is
     // the real contract.
-  } finally {
-    fixture.cleanup();
   }
 });
 

@@ -10,6 +10,7 @@ tags:
     - Gallery
     - Photoswipe
 toc: false
+draft: true
 ---
 
 Stack theme has a built-in support for image galleries. It allows you to create a beautiful gallery by simply placing multiple images side-by-side.

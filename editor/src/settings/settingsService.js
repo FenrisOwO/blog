@@ -17,9 +17,11 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import { saveSafely, diffLines, formatDiff } from '../site/safeWrite.js';
+import { ASSET_LOCATIONS } from '../site/resourceModel.js';
 import { SETTINGS_BY_ID } from './catalog.js';
 import { ConfigGuard, isConfigFileName } from './configGuard.js';
 import { describeSettings, publicSettings } from './describe.js';
+import { PHOSPHOR_PREFIX, iconFileStatus, planSocialIcon, writeIconFile } from './socialIcons.js';
 import { readThemeInfo } from './themeInfo.js';
 import {
   applyAndVerify,
@@ -133,18 +135,10 @@ function validateWidgets({ setting, value, id, widgetTypes }) {
   });
 }
 
-// A social icon name that the theme cannot resolve is a build failure, not a cosmetic
-// problem: Hugo stops with "icon 'brand-mastodon.svg' is not found under 'assets/icons'".
-// The set of names is read from the theme (and the site's own `assets/icons`), so this check
-// never guesses.
-function assertIcon({ icon, icons, id }) {
-  if (!icon || icons.length === 0) return;
-  if (icons.includes(icon)) return;
-  throw new SettingsValidationError(
-    `主题里没有图标 “${icon}”；可用图标：${icons.join(', ')}`,
-    { id },
-  );
-}
+// A social icon name the theme cannot resolve is a build failure, not a cosmetic problem:
+// Hugo stops with "icon 'brand-mastodon.svg' is not found under 'assets/icons'". Resolving the
+// value is therefore part of planning (`resolveIcon` in createSettingsService), and it can end
+// in a file the save has to write as well as a value it has to set.
 
 function validateMenuEntry({ setting, entry, id }) {
   const out = {};
@@ -238,6 +232,25 @@ export function createSettingsService({
       changes.push(change);
     };
 
+    // An icon the theme cannot resolve stops the build, so every social icon is resolved while
+    // the plan is built: a theme icon is written as it is, a Phosphor name or a picture the
+    // user picked gets an SVG of its own under the site's `assets/icons/` (socialIcons.js).
+    // The plan carries the bytes; `save` is what writes them.
+    const iconFiles = new Map();
+    const resolveIcon = (rawIcon, id) => {
+      const planned = planSocialIcon({ siteRoot, value: rawIcon, themeIcons: theme.icons ?? [] });
+      if (planned.error) throw new SettingsValidationError(planned.error, { id });
+      if (planned.unknown) {
+        throw new SettingsValidationError(
+          `主题里没有图标 “${rawIcon}”；可用图标：${(theme.icons ?? []).join(', ')}。`
+            + `也可以填 ${PHOSPHOR_PREFIX}<Phosphor 名字>，或 image:<位置>:<路径>（位置取 ${ASSET_LOCATIONS.join(' / ')}）。`,
+          { id },
+        );
+      }
+      if (planned.file) iconFiles.set(planned.file.relPath, planned.file);
+      return planned.icon;
+    };
+
     const settingsById = new Map(Object.entries(described.settings));
 
     for (const [id, rawValue] of Object.entries(set ?? {})) {
@@ -260,7 +273,7 @@ export function createSettingsService({
         format = formatWidgetsForFile;
       } else if (target.kind === 'menu-field' || target.kind === 'language-field') {
         value = validateScalar({ setting, field: target.field, value: rawValue, id });
-        if (target.key === 'params.icon') assertIcon({ icon: value, icons: theme.icons, id });
+        if (target.key === 'params.icon') value = resolveIcon(value, id);
       } else {
         value = validateScalar({ setting, value: rawValue, id });
       }
@@ -318,7 +331,7 @@ export function createSettingsService({
       if (!doc) throw new SettingsValidationError('menu.toml 不存在', { id: 'menu.social' });
       const setting = SETTINGS_BY_ID.get('menu.social');
       const entry = validateMenuEntry({ setting, entry: rawEntry, id: 'menu.social' });
-      assertIcon({ icon: entry['params.icon'], icons: theme.icons, id: 'menu.social' });
+      if (entry['params.icon']) entry['params.icon'] = resolveIcon(entry['params.icon'], 'menu.social');
       // Always write the identifier/name/url; params go into their own table, like the
       // entries already in the file.
       if (!entry.identifier) throw new SettingsValidationError('社交菜单：缺少标识（identifier）', { id: 'menu.social' });
@@ -360,7 +373,7 @@ export function createSettingsService({
       }
     }
 
-    return { described, files, changes, warnings };
+    return { described, files, changes, warnings, iconFiles: [...iconFiles.values()] };
   }
 
   function filePreview(entry) {
@@ -379,17 +392,31 @@ export function createSettingsService({
     };
   }
 
+  // What a save would also write besides the config files: one SVG per social icon that does
+  // not come from the theme. Reported here, written only by `save`.
+  function iconsPreview(iconFiles) {
+    return iconFiles.map((file) => ({
+      path: file.relPath,
+      status: iconFileStatus({ siteRoot, relPath: file.relPath, bytes: file.bytes }),
+      bytes: file.bytes.length,
+      sha256: file.sha256,
+    }));
+  }
+
   function preview({ set = {}, menu = {} } = {}) {
     const plan = buildPlan({ set, menu });
     const files = plan.files.map(filePreview);
+    const icons = iconsPreview(plan.iconFiles);
     const changed = files.filter((file) => file.status !== 'noop');
+    const changedIcons = icons.filter((icon) => icon.status !== 'noop');
     return {
       dryRun: true,
       files,
-      changedFiles: changed.map((file) => file.file),
+      icons,
+      changedFiles: [...changed.map((file) => file.file), ...changedIcons.map((icon) => icon.path)],
       changes: plan.changes,
       warnings: plan.warnings,
-      status: changed.length > 0 ? 'preview' : 'noop',
+      status: changed.length > 0 || changedIcons.length > 0 ? 'preview' : 'noop',
       description: publicSettings(plan.described),
     };
   }
@@ -397,11 +424,15 @@ export function createSettingsService({
   function save({ set = {}, menu = {} } = {}) {
     const plan = buildPlan({ set, menu });
     const changed = plan.files.filter((file) => file.status !== 'noop');
+    // A missing icon file is reason enough to write even when every value already matches:
+    // the config names an icon Hugo cannot find, and the build would stop on it.
+    const pendingIcons = iconsPreview(plan.iconFiles).filter((icon) => icon.status !== 'noop');
 
-    if (changed.length === 0) {
+    if (changed.length === 0 && pendingIcons.length === 0) {
       return {
         status: 'noop',
         files: [],
+        icons: [],
         changes: plan.changes.map((change) => ({ ...change, status: 'noop' })),
         warnings: plan.warnings,
         touched: [],
@@ -450,9 +481,18 @@ export function createSettingsService({
       throw new Error(`保存失败：${error.message}${rollbackNote}${failedNote}`);
     }
 
+    // The config now names these icons, so the build needs them: an icon the theme cannot find
+    // stops Hugo. New files only - a save never overwrites an icon that is already there with
+    // different bytes (the name would have been disambiguated while planning instead).
+    const writtenIcons = plan.iconFiles.map((file) => {
+      const result = writeIconFile({ siteRoot, relPath: file.relPath, bytes: file.bytes });
+      return { path: file.relPath, status: result.status, bytes: file.bytes.length, sha256: file.sha256 };
+    });
+
     return {
       status: 'written',
       files: written,
+      icons: writtenIcons,
       changes: plan.changes,
       warnings: plan.warnings,
       touched: written.filter((item) => item.status !== 'noop').map((item) => item.file),

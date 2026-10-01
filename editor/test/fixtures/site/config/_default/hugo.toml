@@ -1,0 +1,16 @@
+baseURL                = "http://localhost:1313/"
+title                  = "Fixture Site"
+defaultContentLanguage = "zh"
+hasCJKLanguage         = true
+
+theme = "hugo-theme-stack"
+
+[pagination]
+    pagerSize = 2
+
+[permalinks]
+    post = "/p/:slug/"
+    page = "/:slug/"
+
+[services.disqus]
+    shortname = "fixture-site"

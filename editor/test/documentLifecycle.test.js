@@ -1,40 +1,35 @@
 // P3.3 / P3.4 / P3.6 acceptance tests: the wider content scope, creation, and deletion.
 //
-// Everything runs on a sandbox copy of the real content tree. Deletion is the operation
-// that could lose an article, so the tests here are written to prove the opposite: the
-// bytes come back.
+// Everything runs on a copy of the fixture corpus (test/fixtures/README.md). Deletion is the
+// operation that could lose an article, so the tests here are written to prove the opposite:
+// the bytes come back.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { createDocumentService } from '../src/site/documentService.js';
 import { slugify } from '../src/site/documentCreate.js';
 import { PathGuard } from '../src/site/paths.js';
 import { listTrash, relocate } from '../src/site/trash.js';
+import { FIXTURE, makeFixtureSandbox } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
-const REAL_CONTENT = join(SITE_ROOT, 'content');
-
-const GALLERY = 'post/Image Gallery/index.md';
-const STANDALONE = 'post/pagination-test-01.en.md';
-const CATEGORY = 'categories/Documentation/_index.md';
-const ABOUT = 'page/about/index.md';
+const BUNDLE_DIR = dirname(FIXTURE.bundle);
+const GALLERY = FIXTURE.bundle;
+const STANDALONE = FIXTURE.article;
+const CATEGORY = FIXTURE.category;
+const CATEGORY_DIR = dirname(CATEGORY);
+const ABOUT = FIXTURE.page;
 
 function makeSandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'hve-p3-'));
-  const contentRoot = join(root, 'content');
-  cpSync(REAL_CONTENT, contentRoot, { recursive: true });
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return { root, contentRoot, backupRoot: join(root, 'backups') };
+  return makeFixtureSandbox(t, { prefix: 'hve-p3-' });
 }
 
 function makeService(sandbox, options = {}) {
   return createDocumentService({
     contentRoot: sandbox.contentRoot,
-    siteRoot: SITE_ROOT,
+    siteRoot: sandbox.siteRoot,
     sections: [''],
     backupRoot: sandbox.backupRoot,
     ...options,
@@ -61,26 +56,30 @@ function treeOf(sandbox, relativePath) {
 test('the scope is what decides how much of the site the editor can see and write', async (t) => {
   const sandbox = makeSandbox(t);
 
+  // The numbers are the fixture's own shape, named here so that a fixture document added by
+  // accident is caught: 9 post + 5 page + 2 categories + 1 misc + 1 tags + 2 root = 20.
   const narrow = createDocumentService({
     contentRoot: sandbox.contentRoot,
-    siteRoot: SITE_ROOT,
+    siteRoot: sandbox.siteRoot,
     section: 'post',
     backupRoot: sandbox.backupRoot,
   });
-  assert.equal((await narrow.listDocuments()).length, 27);
-  assert.deepEqual(await narrow.listSections(), [{ section: 'post', label: 'post', count: 27 }]);
+  assert.equal((await narrow.listDocuments()).length, 9);
+  assert.deepEqual(await narrow.listSections(), [{ section: 'post', label: 'post', count: 9 }]);
   assert.throws(() => narrow.read(ABOUT), /document not found/);
 
   const wide = makeService(sandbox);
-  assert.equal((await wide.listDocuments()).length, 51);
+  assert.equal((await wide.listDocuments()).length, 20);
 
   // Sections are reported in the order the scope declares them, root last.
   const sections = await wide.listSections();
   assert.deepEqual(sections, [
-    { section: 'categories', label: 'categories', count: 4 },
-    { section: 'page', label: 'page', count: 16 },
-    { section: 'post', label: 'post', count: 27 },
-    { section: '', label: '(根)', count: 4 },
+    { section: 'categories', label: 'categories', count: 2 },
+    { section: 'misc', label: 'misc', count: 1 },
+    { section: 'page', label: 'page', count: 5 },
+    { section: 'post', label: 'post', count: 9 },
+    { section: 'tags', label: 'tags', count: 1 },
+    { section: '', label: '(根)', count: 2 },
   ]);
 
   // Every document says which section it belongs to.
@@ -110,7 +109,7 @@ test('the wider scope still refuses everything it should', (t) => {
   assert.throws(() => guard.resolveForRemoval(''), /empty path/);
   assert.throws(() => guard.resolveForRemoval('/etc'), /absolute path/);
   assert.throws(() => guard.resolveForRemoval('../hugo.toml'), /outside content root/);
-  assert.doesNotThrow(() => guard.resolveForRemoval('post/Image Gallery'));
+  assert.doesNotThrow(() => guard.resolveForRemoval(BUNDLE_DIR));
 });
 
 test('creating a standalone article writes one file and refuses to overwrite', async (t) => {
@@ -156,9 +155,9 @@ test('creating a leaf bundle makes a directory that owns its index file', async 
   assert.equal(doc.language, 'zh');
 
   // Adding a second language to the same bundle is a warning, not a conflict.
-  const second = service.planForCreate({ kind: 'leaf-bundle', section: 'page', title: 'Team', language: 'ja' });
+  const second = service.planForCreate({ kind: 'leaf-bundle', section: 'page', title: 'Team', language: 'en' });
   assert.deepEqual(second.conflicts, []);
-  assert.equal(second.path, 'page/team/index.ja.md');
+  assert.equal(second.path, 'page/team/index.en.md');
   assert.ok(second.warnings.some((warning) => warning.includes('index.md')));
 });
 
@@ -221,52 +220,53 @@ test('slugify keeps the characters this site actually uses in filenames', () => 
 test('deleting a leaf bundle takes its languages and resources, and can put them back', (t) => {
   const sandbox = makeSandbox(t);
   const service = makeService(sandbox);
-  const before = treeOf(sandbox, 'post/Image Gallery');
+  const before = treeOf(sandbox, BUNDLE_DIR);
 
+  // The fixture bundle: two languages (index.md, index.en.md) and two images.
   const plan = service.planForDelete({ path: GALLERY });
   assert.equal(plan.scope, 'bundle');
-  assert.equal(plan.target, 'post/Image Gallery');
-  assert.equal(plan.documentCount, 4);
-  assert.equal(plan.resourceCount, 4);
-  assert.equal(plan.totalFiles, 8);
+  assert.equal(plan.target, BUNDLE_DIR);
+  assert.equal(plan.documentCount, 2);
+  assert.equal(plan.resourceCount, 2);
+  assert.equal(plan.totalFiles, 4);
   assert.equal(plan.recoverable, true);
   assert.ok(plan.warnings.some((warning) => warning.includes('语言版本')));
   assert.ok(plan.warnings.some((warning) => warning.includes('资源文件')));
-  assert.ok(plan.files.every((file) => file.path.startsWith('post/Image Gallery/')));
+  assert.ok(plan.files.every((file) => file.path.startsWith(`${BUNDLE_DIR}/`)));
 
   // Planning is a dry run: nothing has moved.
-  assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery')), true);
+  assert.equal(existsSync(join(sandbox.contentRoot, BUNDLE_DIR)), true);
 
   const result = service.removeDocument({ path: GALLERY });
   assert.equal(result.deleted, true);
-  assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery')), false);
+  assert.equal(existsSync(join(sandbox.contentRoot, BUNDLE_DIR)), false);
   assert.ok(result.trashId);
 
   // Nothing was destroyed: every byte is in the trash.
-  const trashPath = join(sandbox.backupRoot, 'trash', result.trashId, 'files', 'post/Image Gallery');
+  const trashPath = join(sandbox.backupRoot, 'trash', result.trashId, 'files', BUNDLE_DIR);
   assert.equal(existsSync(trashPath), true);
-  assert.equal(Object.keys(treeOf({ contentRoot: sandbox.backupRoot }, `trash/${result.trashId}/files/post/Image Gallery`)).length, 8);
+  assert.equal(Object.keys(treeOf({ contentRoot: sandbox.backupRoot }, `trash/${result.trashId}/files/${BUNDLE_DIR}`)).length, 4);
 
   const restored = service.restore({ id: result.trashId });
-  assert.equal(restored.relPath, 'post/Image Gallery');
-  assert.deepEqual(treeOf(sandbox, 'post/Image Gallery'), before, 'the bundle comes back byte for byte');
-  assert.deepEqual(before, treeOf(sandbox, 'post/Image Gallery'));
+  assert.equal(restored.relPath, BUNDLE_DIR);
+  assert.deepEqual(treeOf(sandbox, BUNDLE_DIR), before, 'the bundle comes back byte for byte');
+  assert.deepEqual(before, treeOf(sandbox, BUNDLE_DIR));
 });
 
 test('deleting one language of a bundle leaves its siblings alone', (t) => {
   const sandbox = makeSandbox(t);
   const service = makeService(sandbox);
 
-  const plan = service.planForDelete({ path: 'post/Image Gallery/index.ja.md', scope: 'document' });
+  const plan = service.planForDelete({ path: FIXTURE.bundleEn, scope: 'document' });
   assert.equal(plan.scope, 'document');
   assert.equal(plan.totalFiles, 1);
   assert.ok(plan.warnings.some((warning) => warning.includes('会保留')));
 
-  service.removeDocument({ path: 'post/Image Gallery/index.ja.md', scope: 'document' });
+  service.removeDocument({ path: FIXTURE.bundleEn, scope: 'document' });
 
-  assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery/index.ja.md')), false);
-  assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery/index.md')), true);
-  assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery/index.en.md')), true);
+  assert.equal(existsSync(join(sandbox.contentRoot, FIXTURE.bundleEn)), false);
+  assert.equal(existsSync(join(sandbox.contentRoot, FIXTURE.bundle)), true);
+  assert.equal(existsSync(join(sandbox.contentRoot, FIXTURE.bundleResource)), true);
 });
 
 test('deleting one file counts as one document, not as a resource', (t) => {
@@ -285,7 +285,7 @@ test('deleting one file counts as one document, not as a resource', (t) => {
   assert.equal(existsSync(join(sandbox.contentRoot, STANDALONE)), false);
 
   // The same for one language of a bundle: one file in, one file out.
-  const language = service.planForDelete({ path: 'page/about/index.ja.md', scope: 'document' });
+  const language = service.planForDelete({ path: FIXTURE.pageEn, scope: 'document' });
   assert.equal(language.documentCount, 1);
   assert.equal(language.resourceCount, 0);
 });
@@ -301,45 +301,42 @@ test('a category page is deleted as its _index files plus its resources, and not
   assert.deepEqual(single.files.map((file) => file.path), [CATEGORY]);
   assert.ok(single.warnings.some((warning) => warning.includes('会保留')));
 
-  // The whole term page: every language of `_index.md`, plus the image it points at.
+  // The whole term page: every language of `_index.md`, plus the image it points at. The
+  // fixture category has two languages and one image.
   const whole = service.planForDelete({ path: CATEGORY, scope: 'bundle' });
   assert.equal(whole.scope, 'bundle');
-  assert.equal(whole.target, 'categories/Documentation');
-  assert.equal(whole.documentCount, 4);
+  assert.equal(whole.target, CATEGORY_DIR);
+  assert.equal(whole.documentCount, 2);
   assert.equal(whole.resourceCount, 1);
   assert.deepEqual(whole.files.map((file) => file.path), [
-    'categories/Documentation/_index.en.md',
-    'categories/Documentation/_index.ja.md',
-    'categories/Documentation/_index.md',
-    'categories/Documentation/_index.zh-hant-tw.md',
-    'categories/Documentation/hutomo-abrianto-l2jk-uxb1BY-unsplash.jpg',
+    FIXTURE.categoryEn,
+    FIXTURE.category,
+    FIXTURE.categoryResource,
   ]);
   assert.deepEqual(whole.kept, []);
 
   // Planning is a dry run.
-  assert.equal(existsSync(join(sandbox.contentRoot, 'categories/Documentation/_index.md')), true);
+  assert.equal(existsSync(join(sandbox.contentRoot, CATEGORY)), true);
 
   const result = service.removeDocument({ path: CATEGORY, scope: 'bundle' });
   assert.equal(result.deleted, true);
   // The page's files are gone; the directory itself was never a target, so an emptied one
   // stays where it was - which is also what makes the restore below conflict-free.
-  assert.deepEqual(readdirSync(join(sandbox.contentRoot, 'categories/Documentation')), []);
+  assert.deepEqual(readdirSync(join(sandbox.contentRoot, CATEGORY_DIR)), []);
 
   // One deletion, one trash entry, however many paths it moved.
   const entries = listTrash({ backupRoot: sandbox.backupRoot });
   assert.equal(entries.length, 1);
   assert.equal(entries[0].id, result.trashId);
-  assert.equal(entries[0].files, 5);
-  assert.equal(entries[0].entries.length, 5);
+  assert.equal(entries[0].files, 3);
+  assert.equal(entries[0].entries.length, 3);
 
   const restored = service.restore({ id: result.trashId });
   assert.equal(restored.restoredAt != null, true);
   for (const path of [
-    'categories/Documentation/_index.md',
-    'categories/Documentation/_index.en.md',
-    'categories/Documentation/_index.ja.md',
-    'categories/Documentation/_index.zh-hant-tw.md',
-    'categories/Documentation/hutomo-abrianto-l2jk-uxb1BY-unsplash.jpg',
+    FIXTURE.category,
+    FIXTURE.categoryEn,
+    FIXTURE.categoryResource,
   ]) {
     assert.equal(existsSync(join(sandbox.contentRoot, path)), true, `${path} came back`);
   }
@@ -363,7 +360,7 @@ test('a branch bundle keeps its child pages when the page itself is deleted', (t
 
   assert.equal(existsSync(join(sandbox.contentRoot, 'page/_index.md')), false);
   assert.equal(existsSync(join(sandbox.contentRoot, 'page/about/index.md')), true);
-  assert.equal(existsSync(join(sandbox.contentRoot, 'page/links/ts-logo-128.jpg')), true);
+  assert.equal(existsSync(join(sandbox.contentRoot, FIXTURE.linksResource)), true);
 
   const restored = service.restore({ id: service.trash()[0].id });
   assert.equal(restored.relPath, 'page/_index.md');
@@ -443,7 +440,7 @@ test('the trash store keeps its own directory out of the site', (t) => {
   const service = makeService(sandbox);
   service.removeDocument({ path: STANDALONE });
 
-  assert.equal(existsSync(join(SITE_ROOT, '.backups')), false, 'the real site must never gain a backups directory');
+  assert.equal(existsSync(join(sandbox.siteRoot, '.backups')), false, 'the site must never gain a backups directory');
   const entries = listTrash({ backupRoot: sandbox.backupRoot });
   assert.equal(entries.length, 1);
   assert.equal(entries[0].transport, 'rename');

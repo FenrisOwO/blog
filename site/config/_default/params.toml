@@ -3,12 +3,13 @@ rssFullContent = true
 favicon        = "img/avatar.png"
 
 [footer]
-    since = 2019
+    since = 2026
 
 [sidebar]
     emoji    = "🎵"
     subtitle = "南朝四百八十寺，多少楼台烟雨中。"
     avatar   = "img/avatar.png"
+    compact  = false
 
 [article]
     [article.license]
@@ -25,8 +26,10 @@ favicon        = "img/avatar.png"
     page     = [{ type = "toc" }]
 
 [comments]
-    # See complete configuration in config/_default/params.toml
-    enabled  = true
+    # Comments are off for the whole site. With the theme's default (enabled = true) every
+    # single page falls back to Hugo's internal Disqus partial, which prints "Disqus comments
+    # not available by default when the website is previewed locally." in local previews.
+    enabled  = false
     provider = "disqus"
 
 # GDPR Cookie Consent Configuration

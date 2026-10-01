@@ -9,6 +9,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { phosphorIconNames } from './socialIcons.js';
 import { readToml } from './toml/index.js';
 
 export function readThemeName({ siteRoot, hugoConfig = join(siteRoot, 'config', '_default', 'hugo.toml') }) {
@@ -78,6 +79,9 @@ export function readThemeInfo({ siteRoot, themeName = null, site = {} }) {
     widgetTypes: present ? widgetTypes(root) : [],
     commentProviders: present ? commentProviders(root, site) : [],
     icons: present ? iconNames([root, siteRoot]) : [],
+    // Names the editor can install itself, from the optional `@phosphor-icons/core` package
+    // (feel free to leave it out: an empty list costs nothing but the extra choices).
+    phosphorIcons: present ? phosphorIconNames() : [],
   };
 }
 

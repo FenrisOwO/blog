@@ -1,11 +1,11 @@
 // Site Settings (Phase 5.2 / 5.3): the service that turns "the user changed three fields"
 // into "these files, this diff, this build".
 //
-// Reads are asserted against the real site (a settings screen that does not read the real
-// config is not worth testing). Writes always happen in a temporary copy of
-// `config/_default`, and every write assertion re-reads the files from disk.
+// Reads are asserted against the fixture corpus (a settings screen that does not read real
+// config is not worth testing). Every read and write happens in a temporary copy of the
+// fixture `config/_default`, and every write assertion re-reads the files from disk.
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
@@ -16,27 +16,51 @@ import { readThemeInfo } from '../src/settings/themeInfo.js';
 import { saveSafely } from '../src/site/safeWrite.js';
 import { createSettingsService, SettingsValidationError } from '../src/settings/settingsService.js';
 import { readToml } from '../src/settings/toml/index.js';
+import { FIXTURE_SITE, INSTALLED_THEME } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
-const REAL_CONFIG = join(SITE_ROOT, 'config', '_default');
 const CONFIG_FILES = ['hugo.toml', 'languages.toml', 'markup.toml', 'menu.toml', 'params.toml', 'related.toml'];
 
-const themeInfo = readThemeInfo({
-  siteRoot: SITE_ROOT,
-  site: { servicesDisqusShortname: 'hugo-theme-stack' },
-});
+// The corpus declares no site-level sidebar subtitle, no cookies table, no widget lists and
+// only two languages; the tests that read or edit those declare them in their own sandbox
+// (test/fixtures/README.md: a test writes what only it needs).
+function seedConfig(configRoot) {
+  const paramsPath = join(configRoot, 'params.toml');
+  const params = readFileSync(paramsPath, 'utf8').replace(
+    '[sidebar]\n    emoji = "🧪"\n',
+    '[sidebar]\n    emoji    = "🧪"\n    subtitle = "Fixture subtitle."\n',
+  );
+  writeFileSync(
+    paramsPath,
+    `mainSections   = ["post"]\n${params}\n# GDPR Cookie Consent Configuration\n[cookies]\n    enabled = false\n\n    [cookies.categories]\n        analytics  = true\n        functional = true\n\n[widgets]\n    homepage = [\n        { type = "search" },\n        { type = "archives", params = { limit = 5 } },\n        { type = "categories", params = { limit = 10 } },\n        { type = "tag-cloud", params = { limit = 10 } },\n    ]\n    page     = [{ type = "toc" }]\n`,
+  );
+
+  const languagesPath = join(configRoot, 'languages.toml');
+  writeFileSync(
+    languagesPath,
+    `${readFileSync(languagesPath, 'utf8')}\n[zh-hant-tw]\n    label  = "正體中文"\n    locale = "zh-Hant-TW"\n    title  = "Fixture Site TW"\n    weight = 3\n\n[ja]\n    label  = "日本語"\n    locale = "ja-JP"\n    title  = "Fixture Site JA"\n    weight = 4\n`,
+  );
+
+  const menuPath = join(configRoot, 'menu.toml');
+  writeFileSync(
+    menuPath,
+    '[[social]]\n    identifier = "github"\n    name       = "GitHub"\n    url        = "https://github.com/example"\n\n    [social.params]\n        icon = "brand-github"\n\n[[social]]\n    identifier = "twitter"\n    name       = "Twitter"\n    url        = "https://twitter.com/example"\n\n    [social.params]\n        icon = "brand-twitter"\n',
+  );
+}
 
 function tempSite() {
   const root = mkdtempSync(join(tmpdir(), 'hve-settings-'));
   const configRoot = join(root, 'config', '_default');
-  mkdirSync(configRoot, { recursive: true });
-  for (const file of CONFIG_FILES) copyFileSync(join(REAL_CONFIG, file), join(configRoot, file));
+  cpSync(join(FIXTURE_SITE, 'config'), join(root, 'config'), { recursive: true });
+  cpSync(INSTALLED_THEME, join(root, 'themes', 'hugo-theme-stack'), { recursive: true });
+  seedConfig(configRoot);
   const backupRoot = join(root, 'backups');
+  const themeInfo = readThemeInfo({ siteRoot: root, site: { servicesDisqusShortname: 'fixture-site' } });
   const service = createSettingsService({ siteRoot: root, configRoot, backupRoot, themeInfo });
   return {
     root,
     configRoot,
     backupRoot,
+    themeInfo,
     service,
     read: (file) => readFileSync(join(configRoot, file), 'utf8'),
     cleanup: () => rmSync(root, { recursive: true, force: true }),
@@ -52,78 +76,73 @@ function withTempSite(fn) {
   }
 }
 
-test('the settings list describes the real site: values, sources and layering', () => {
-  const service = createSettingsService({
-    siteRoot: SITE_ROOT,
-    configRoot: REAL_CONFIG,
-    backupRoot: join(tmpdir(), 'unused-backups'),
-    themeInfo,
-  });
-  const described = service.list();
+test('the settings list describes the site: values, sources and layering', () => {
+  withTempSite(({ service, read }) => {
+    const described = service.list();
 
-  assert.deepEqual(described.files.map((file) => file.file), CONFIG_FILES);
-  assert.deepEqual(described.languages.map((language) => language.code), ['zh', 'en', 'zh-hant-tw', 'ja']);
-  assert.equal(described.defaultLanguage, 'zh');
-  assert.deepEqual(described.groups.map((group) => group.id), ['general', 'appearance', 'navigation', 'language', 'markup', 'related']);
+    assert.deepEqual(described.files.map((file) => file.file), CONFIG_FILES);
+    assert.deepEqual(described.languages.map((language) => language.code), ['zh', 'en', 'zh-hant-tw', 'ja']);
+    assert.equal(described.defaultLanguage, 'zh');
+    assert.deepEqual(described.groups.map((group) => group.id), ['general', 'appearance', 'navigation', 'language', 'markup', 'related']);
 
-  // The values asserted here are the ones the real site currently holds, read from the same
-  // files the service reads: this config belongs to the user, so a test that pinned the
-  // shipped defaults would fail the moment anyone used the settings screen.
-  const realOf = (file) => readToml(readFileSync(join(REAL_CONFIG, file), 'utf8')).values;
-  const realParams = realOf('params.toml');
-  const realLanguages = realOf('languages.toml');
-  const realHugo = realOf('hugo.toml');
+    // The values asserted here are the ones the sandbox config holds, read from the same files
+    // the service reads, rather than pinned theme defaults.
+    const realOf = (file) => readToml(read(file)).values;
+    const realParams = realOf('params.toml');
+    const realLanguages = realOf('languages.toml');
+    const realHugo = realOf('hugo.toml');
 
-  // A value the site writes itself.
-  const since = described.settings['params.footer.since'];
-  assert.equal(since.value, realParams['footer.since']);
-  assert.equal(since.source, 'site');
-  assert.equal(since.present, true);
+    // A value the site writes itself.
+    const since = described.settings['params.footer.since'];
+    assert.equal(since.value, realParams['footer.since']);
+    assert.equal(since.source, 'site');
+    assert.equal(since.present, true);
 
-  // A value that only the theme has: offered, but honestly marked. Which keys are still
-  // theme-only depends on how much of the theme the site has overridden, so one is found.
-  const themeOnly = Object.entries(described.settings).find(
-    ([, setting]) => setting.source === 'theme' && setting.present === false && setting.kind === 'value',
-  );
-  assert.ok(themeOnly, 'the theme defaults are offered alongside the site values');
-  assert.ok(themeOnly[1].warnings.some((warning) => warning.includes('主题默认')));
+    // A value that only the theme has: offered, but honestly marked. Which keys are still
+    // theme-only depends on how much of the theme the site has overridden, so one is found.
+    const themeOnly = Object.entries(described.settings).find(
+      ([, setting]) => setting.source === 'theme' && setting.present === false && setting.kind === 'value',
+    );
+    assert.ok(themeOnly, 'the theme defaults are offered alongside the site values');
+    assert.ok(themeOnly[1].warnings.some((warning) => warning.includes('主题默认')));
 
-  // The override relationship, per language: the site default plus the language layer.
-  const subtitle = described.settings['params.sidebar.subtitle'];
-  assert.equal(subtitle.value, realParams['sidebar.subtitle']);
-  const byCode = new Map(subtitle.languageRows.map((row) => [row.code, row]));
-  for (const code of described.languages.map((language) => language.code)) {
-    const override = realLanguages[`${code}.params.sidebar.subtitle`];
-    const row = byCode.get(code);
-    assert.ok(row, `${code} has a row`);
-    assert.equal(row.effective, override ?? realParams['sidebar.subtitle']);
-    if (override !== undefined) {
-      assert.equal(row.source, 'language');
-      assert.equal(row.present, true);
+    // The override relationship, per language: the site default plus the language layer.
+    const subtitle = described.settings['params.sidebar.subtitle'];
+    assert.equal(subtitle.value, realParams['sidebar.subtitle']);
+    const byCode = new Map(subtitle.languageRows.map((row) => [row.code, row]));
+    for (const code of described.languages.map((language) => language.code)) {
+      const override = realLanguages[`${code}.params.sidebar.subtitle`];
+      const row = byCode.get(code);
+      assert.ok(row, `${code} has a row`);
+      assert.equal(row.effective, override ?? realParams['sidebar.subtitle']);
+      if (override !== undefined) {
+        assert.equal(row.source, 'language');
+        assert.equal(row.present, true);
+      }
     }
-  }
 
-  // Title is the same idea with Hugo's own key: languages.<code>.title overrides hugo.title.
-  const title = described.settings['hugo.title'];
-  assert.equal(title.value, realHugo.title);
-  const titleRow = title.languageRows.find((row) => row.code === 'zh');
-  assert.equal(titleRow.effective, realLanguages['zh.title'] ?? realHugo.title);
-  assert.equal(titleRow.source, realLanguages['zh.title'] === undefined ? 'site' : 'language');
+    // Title is the same idea with Hugo's own key: languages.<code>.title overrides hugo.title.
+    const title = described.settings['hugo.title'];
+    assert.equal(title.value, realHugo.title);
+    const titleRow = title.languageRows.find((row) => row.code === 'zh');
+    assert.equal(titleRow.effective, realLanguages['zh.title'] ?? realHugo.title);
+    assert.equal(titleRow.source, realLanguages['zh.title'] === undefined ? 'site' : 'language');
 
-  // Options come from the theme, not from this editor.
-  assert.deepEqual(described.theme.widgetTypes, ['archives', 'categories', 'search', 'tag-cloud', 'taxonomy', 'toc']);
-  assert.ok(described.theme.icons.includes('brand-github'), 'the theme\'s own icon names are listed');
-  assert.equal(described.settings['menu.social'].entries.every((entry) => entry.iconKnown), true);
-  assert.deepEqual(described.settings['menu.social'].iconOptions, described.theme.icons);
-  assert.ok(described.theme.commentProviders.includes('disqus'));
-  assert.ok(described.settings['params.comments.provider'].options.some((option) => option.value === 'giscus'));
-  assert.ok(described.settings['hugo.defaultContentLanguage'].options.some((option) => option.value === 'ja'));
+    // Options come from the theme, not from this editor.
+    assert.deepEqual(described.theme.widgetTypes, ['archives', 'categories', 'search', 'tag-cloud', 'taxonomy', 'toc']);
+    assert.ok(described.theme.icons.includes('brand-github'), 'the theme\'s own icon names are listed');
+    assert.equal(described.settings['menu.social'].entries.every((entry) => entry.iconKnown), true);
+    assert.deepEqual(described.settings['menu.social'].iconOptions, described.theme.icons);
+    assert.ok(described.theme.commentProviders.includes('disqus'));
+    assert.ok(described.settings['params.comments.provider'].options.some((option) => option.value === 'giscus'));
+    assert.ok(described.settings['hugo.defaultContentLanguage'].options.some((option) => option.value === 'ja'));
 
-  // Unmanaged keys are reported, so "not supported yet" is never the same as "invisible".
-  const unmanaged = described.unmanaged['params.toml'].map((leaf) => leaf.path);
-  assert.ok(unmanaged.includes('mainSections'));
-  assert.ok(unmanaged.includes('cookies.categories.analytics'));
-  assert.ok(described.unmanaged['related.toml'].some((leaf) => leaf.path === 'indices'));
+    // Unmanaged keys are reported, so "not supported yet" is never the same as "invisible".
+    const unmanaged = described.unmanaged['params.toml'].map((leaf) => leaf.path);
+    assert.ok(unmanaged.includes('mainSections'));
+    assert.ok(unmanaged.includes('cookies.categories.analytics'));
+    assert.ok(described.unmanaged['related.toml'].some((leaf) => leaf.path === 'indices'));
+  });
 });
 
 test('a preview of a scalar change shows the file, the diff and the change list', () => {
@@ -387,7 +406,7 @@ test('a multi-file save is all-or-nothing: a failed write rolls the others back'
       siteRoot: site.root,
       configRoot: site.configRoot,
       backupRoot: site.backupRoot,
-      themeInfo,
+      themeInfo: site.themeInfo,
       writeFile: (options) => {
         writes += 1;
         if (writes === 2) throw new Error('simulated disk failure');
@@ -417,34 +436,39 @@ test('a multi-file save is all-or-nothing: a failed write rolls the others back'
 });
 
 test('the guard refuses anything outside a single existing .toml file', () => {
-  const guard = configGuardFor(SITE_ROOT);
-  assert.deepEqual(guard.listFiles(), CONFIG_FILES);
-  assert.equal(guard.isWritable('params.toml'), true);
-  assert.throws(() => guard.resolveForWrite('../hugo.toml'), /only a single .toml/);
-  assert.throws(() => guard.resolveForWrite('/etc/passwd'), /absolute config path/);
-  assert.throws(() => guard.resolveForWrite('nested/params.toml'), /only a single .toml/);
-  assert.throws(() => guard.resolveForWrite('new.toml'), /not found/);
-  assert.throws(() => guard.resolveForWrite('params.yaml'), /only a single .toml/);
-  assert.throws(() => guard.resolveForRead('nope.toml'), /not found/);
-  assert.equal(guard.toRelative(join(guard.configRoot, 'menu.toml')), 'menu.toml');
-  assert.ok(new ConfigGuard({ configRoot: REAL_CONFIG }).configRoot.endsWith('config/_default'));
+  const site = tempSite();
+  try {
+    const guard = configGuardFor(site.root);
+    assert.deepEqual(guard.listFiles(), CONFIG_FILES);
+    assert.equal(guard.isWritable('params.toml'), true);
+    assert.throws(() => guard.resolveForWrite('../hugo.toml'), /only a single .toml/);
+    assert.throws(() => guard.resolveForWrite('/etc/passwd'), /absolute config path/);
+    assert.throws(() => guard.resolveForWrite('nested/params.toml'), /only a single .toml/);
+    assert.throws(() => guard.resolveForWrite('new.toml'), /not found/);
+    assert.throws(() => guard.resolveForWrite('params.yaml'), /only a single .toml/);
+    assert.throws(() => guard.resolveForRead('nope.toml'), /not found/);
+    assert.equal(guard.toRelative(join(guard.configRoot, 'menu.toml')), 'menu.toml');
+    assert.ok(new ConfigGuard({ configRoot: site.configRoot }).configRoot.endsWith('config/_default'));
+  } finally {
+    site.cleanup();
+  }
 });
 
 test('the raw view reads a file and never lets a path escape', () => {
-  const service = createSettingsService({
-    siteRoot: SITE_ROOT,
-    configRoot: REAL_CONFIG,
-    backupRoot: join(tmpdir(), 'unused-backups'),
-    themeInfo,
-  });
-  const raw = service.raw('params.toml');
-  assert.equal(raw.text, readFileSync(join(REAL_CONFIG, 'params.toml'), 'utf8'));
-  assert.equal(raw.sha256.length, 64);
-  assert.ok(raw.tables.includes('sidebar'));
-  assert.throws(() => service.raw('../../../etc/passwd'), SettingsValidationError);
-  assert.throws(() => service.raw('params.yaml'), SettingsValidationError);
-  // A name that is fine but a file that is not there is a missing file, not a bad request.
-  assert.throws(() => service.raw('missing.toml'), ConfigFileNotFoundError);
+  const site = tempSite();
+  try {
+    const service = site.service;
+    const raw = service.raw('params.toml');
+    assert.equal(raw.text, readFileSync(join(site.configRoot, 'params.toml'), 'utf8'));
+    assert.equal(raw.sha256.length, 64);
+    assert.ok(raw.tables.includes('sidebar'));
+    assert.throws(() => service.raw('../../../etc/passwd'), SettingsValidationError);
+    assert.throws(() => service.raw('params.yaml'), SettingsValidationError);
+    // A name that is fine but a file that is not there is a missing file, not a bad request.
+    assert.throws(() => service.raw('missing.toml'), ConfigFileNotFoundError);
+  } finally {
+    site.cleanup();
+  }
 });
 
 test('writes are typed: a number stays a number and a string stays quoted', () => {

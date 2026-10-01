@@ -11,6 +11,7 @@ tags:
     - Photoswipe
 toc: false
 readingTime: true
+draft: true
 ---
 
 Stack 主题内置了对相册的支持。你只需要简单地将多张图片并排放置，就可以创建一个精美的相册。

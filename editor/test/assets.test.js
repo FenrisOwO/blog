@@ -10,7 +10,7 @@
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -28,10 +28,15 @@ import { describeResource, describeSiteAsset, suggestAvailableName, validateAsse
 import { createAssetService, AssetValidationError } from '../src/site/assetService.js';
 import { createDocumentService } from '../src/site/documentService.js';
 import { PathGuard } from '../src/site/paths.js';
+import { FIXTURE, FIXTURE_CONTENT, FIXTURE_SITE, makeFixtureSandbox } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
-const CONTENT_ROOT = join(SITE_ROOT, 'content');
-const GALLERY = 'post/Image Gallery';
+const SITE_ROOT = FIXTURE_SITE;
+const CONTENT_ROOT = FIXTURE_CONTENT;
+// The fixture's leaf bundle with images: this file's subject is what the editor does to the
+// resources of a bundle, so it uses a bundle the tests own.
+const GALLERY = dirname(FIXTURE.bundle);
+const GALLERY_PHOTO = FIXTURE.bundleResource;
+const GALLERY_UNUSED = FIXTURE.bundleLooseResource;
 
 // Real bytes, small enough to inline. The service never decodes an image, so what matters is
 // that these are recognised formats with the right signatures.
@@ -45,22 +50,18 @@ const PNG_OTHER = Buffer.from(
 );
 const GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 const PDF = Buffer.from('%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n');
-const JPG = readFileSync(join(CONTENT_ROOT, GALLERY, 'luca-bravo-alS7ewQ41M8-unsplash.jpg'));
+const JPG = readFileSync(join(CONTENT_ROOT, GALLERY_PHOTO));
 
 const sha = (buffer) => createHash('sha256').update(buffer).digest('hex');
 
 function sandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'hve-assets-'));
-  cpSync(CONTENT_ROOT, join(root, 'content'), { recursive: true });
-  cpSync(join(SITE_ROOT, 'config'), join(root, 'config'), { recursive: true });
-  cpSync(join(SITE_ROOT, 'themes'), join(root, 'themes'), { recursive: true });
-  mkdirSync(join(root, 'static', 'img'), { recursive: true });
-  writeFileSync(join(root, 'static', 'img', 'logo.png'), PNG);
-  mkdirSync(join(root, 'assets', 'scss'), { recursive: true });
-  writeFileSync(join(root, 'assets', 'scss', 'custom.scss'), '$brand: #2a9d8f;\n');
-
-  const contentRoot = join(root, 'content');
-  const backupRoot = join(root, 'backups');
+  // The fixture's own static/img/logo.png and assets/scss/custom.scss are the site trees this
+  // file lists; the theme comes from the installed dependency.
+  const fixture = makeFixtureSandbox(t, { prefix: 'hve-assets-', theme: true });
+  // The tests below talk about a *site* root: config, static/ and assets/ hang off it.
+  const root = fixture.siteRoot;
+  const contentRoot = fixture.contentRoot;
+  const backupRoot = fixture.backupRoot;
   const documents = createDocumentService({
     contentRoot,
     siteRoot: root,
@@ -78,7 +79,6 @@ function sandbox(t) {
     defaultLanguage: documents.defaultLanguage,
   });
 
-  t.after(() => rmSync(root, { recursive: true, force: true }));
   return {
     root,
     contentRoot,
@@ -206,7 +206,7 @@ test('the guard has two doors: markdown is a document, everything else is a reso
   // A section resource is writable; a section root is not a resource location, and neither is
   // a path that climbs out or hides.
   assert.equal(guard.isWritableAsset(`${GALLERY}/probe.png`), true);
-  assert.equal(guard.isWritableAsset('page/links/ts-logo-128.jpg'), true);
+  assert.equal(guard.isWritableAsset(FIXTURE.linksResource), true);
   assert.equal(guard.isWritableAsset(`${GALLERY}/index.md`), false, 'markdown is not a resource');
   assert.equal(guard.isWritableAsset('../outside.png'), false);
   assert.equal(guard.isWritableAsset('/etc/passwd'), false);
@@ -218,7 +218,7 @@ test('the guard has two doors: markdown is a document, everything else is a reso
   assert.equal(narrow.isWritableAsset('page/x.png'), false, 'a section the editor does not manage is refused');
 
   // Reads inside a bundle resolve to that bundle; a markdown file is refused here.
-  assert.equal(guard.resolveAssetForRead(`${GALLERY}/helena-hertz-wWZzXlDpMog-unsplash.jpg`), join(contentRoot, GALLERY, 'helena-hertz-wWZzXlDpMog-unsplash.jpg'));
+  assert.equal(guard.resolveAssetForRead(GALLERY_PHOTO), join(contentRoot, GALLERY_PHOTO));
   assert.throws(() => guard.resolveAssetForRead(`${GALLERY}/index.md`), /document, not a resource/);
   assert.throws(() => guard.resolveAssetForRead('../../etc/passwd'), /outside content root/);
 
@@ -246,21 +246,20 @@ test('the asset list groups resources by the bundle that owns them', async (t) =
   assert.equal(gallery.canUpload, true);
   assert.equal(gallery.uploadBlockedReason, null);
   assert.equal(gallery.documentPath, `${GALLERY}/index.md`, 'the default language page opens first');
+  // The fixture bundle owns a photo the page points at and an image it does not use.
   assert.deepEqual(gallery.resources.map((resource) => resource.filename).sort(), [
-    'florian-klauer-nptLmg6jqDo-unsplash.jpg',
-    'helena-hertz-wWZzXlDpMog-unsplash.jpg',
-    'hudai-gayiran-3Od_VKcDEAA-unsplash.jpg',
-    'luca-bravo-alS7ewQ41M8-unsplash.jpg',
+    'fixture-extra.png',
+    'fixture-photo.jpg',
   ]);
   for (const resource of gallery.resources) {
-    assert.equal(resource.referenced, true, 'the gallery images are referenced by the page');
     assert.equal(resource.capabilities.replace, true);
     assert.match(resource.previewUrl, /^\/api\/assets\/raw\?location=content&path=/);
   }
-
+  const photo = gallery.resources.find((resource) => resource.filename === 'fixture-photo.jpg');
+  const unused = gallery.resources.find((resource) => resource.filename === 'fixture-extra.png');
+  assert.equal(photo.referenced, true, 'the page points at its photo');
   // A resource in a bundle that does not reference it is still listed, flagged as unreferenced.
-  const markdownSyntax = listing.bundles.find((bundle) => bundle.bundlePath === 'post/Markdown Syntax');
-  assert.equal(markdownSyntax.resources[0].referenced, true);
+  assert.equal(unused.referenced, false);
 
   // The content root is not a bundle: there is nothing to upload into.
   const rootBundle = listing.bundles.find((bundle) => bundle.bundlePath === '');
@@ -271,8 +270,10 @@ test('the asset list groups resources by the bundle that owns them', async (t) =
   assert.deepEqual(listing.static.map((asset) => asset.path), ['img/logo.png']);
   assert.equal(listing.static[0].capabilities.delete, false);
   assert.equal(listing.summary.staticFiles, 1);
-  assert.equal(listing.summary.contentResources, 7);
-  assert.equal(listing.summary.replaceable, 7);
+  // The fixture's content resources: the bundle's two images, the links page's logo and the
+  // category page's banner.
+  assert.equal(listing.summary.contentResources, 4);
+  assert.equal(listing.summary.replaceable, 4);
   assert.equal(listing.limits.maxUploadBytes, ASSET_MAX_BYTES);
   assert.ok(listing.limits.uploadExtensions.includes('.png'));
   assert.equal(listing.limits.uploadExtensions.includes('.svg'), false, 'svg stays out of the writable set');
@@ -350,17 +351,17 @@ test('an upload has to be what its name says, and small enough', async (t) => {
 
 test('replacing keeps the path, backs up the old bytes, and is a true no-op when nothing changes', async (t) => {
   const { service, read, backupRoot } = sandbox(t);
-  const path = `${GALLERY}/luca-bravo-alS7ewQ41M8-unsplash.jpg`;
+  const path = GALLERY_PHOTO;
   const before = sha256Bytes(read(path));
-  // Another real image of the same family: a replace has to keep the name and the bytes
-  // agreeing, so a JPEG path is replaced with JPEG content.
-  const replacement = readFileSync(join(CONTENT_ROOT, GALLERY, 'hudai-gayiran-3Od_VKcDEAA-unsplash.jpg'));
+  // Another real image from the fixture: a replace has to keep the name and the bytes agreeing,
+  // so a JPEG path is replaced with JPEG content.
+  const replacement = readFileSync(join(CONTENT_ROOT, FIXTURE.linksResource));
 
   const plan = await service.planReplace({ path, size: replacement.length });
   assert.equal(plan.status, 'preview');
   assert.equal(plan.shaBefore, before);
   assert.equal(plan.referenced, true);
-  assert.match(plan.warnings[0], /被 4 个文档引用/);
+  assert.match(plan.warnings[0], /被 2 个文档引用/); // both index files of the fixture bundle
   assert.equal(sha256Bytes(read(path)), before, 'the plan wrote nothing');
 
   const replaced = await service.replace({ path, dataBase64: replacement.toString('base64'), confirm: true });
@@ -396,7 +397,7 @@ test('replacing keeps the path, backs up the old bytes, and is a true no-op when
 
 test('deleting is a reversible move: the bytes come back exactly, and references are named', async (t) => {
   const { service, read, exists } = sandbox(t);
-  const path = `${GALLERY}/helena-hertz-wWZzXlDpMog-unsplash.jpg`;
+  const path = GALLERY_PHOTO;
   const before = sha256Bytes(read(path));
 
   const plan = await service.planRemove({ path });
@@ -442,28 +443,28 @@ test('deleting is a reversible move: the bytes come back exactly, and references
 
 test('a deleted resource can be uploaded again, and an upload cannot land on another bundle', async (t) => {
   const { service, exists, read } = sandbox(t);
-  const path = `${GALLERY}/florian-klauer-nptLmg6jqDo-unsplash.jpg`;
+  const path = GALLERY_UNUSED;
 
   await service.remove({ path, confirm: true });
   assert.equal(exists(path), false);
 
   // Re-uploading the same name now succeeds: the collision is with the filesystem, not with a
   // memory of what used to be there.
-  const again = await service.upload({ bundlePath: GALLERY, filename: 'florian-klauer-nptLmg6jqDo-unsplash.jpg', dataBase64: JPG.toString('base64'), confirm: true });
+  const again = await service.upload({ bundlePath: GALLERY, filename: 'fixture-extra.png', dataBase64: PNG.toString('base64'), confirm: true });
   assert.equal(again.status, 'created');
-  assert.equal(sha256Bytes(read(path)), sha256Bytes(JPG));
+  assert.equal(sha256Bytes(read(path)), sha256Bytes(PNG));
 
   // A resource can only be described through the location it belongs to.
   await assert.rejects(() => service.describe({ location: 'static', path }), /asset not found/);
   const described = await service.describe({ path });
-  assert.equal(described.filename, 'florian-klauer-nptLmg6jqDo-unsplash.jpg');
+  assert.equal(described.filename, 'fixture-extra.png');
 
   // Reading bytes is limited to the resources the service lists.
   const bytes = await service.readBytes({ path });
-  assert.equal(sha256Bytes(bytes.bytes), sha256Bytes(JPG));
-  assert.equal(bytes.mimeType, 'image/jpeg');
+  assert.equal(sha256Bytes(bytes.bytes), sha256Bytes(PNG));
+  assert.equal(bytes.mimeType, 'image/png');
   const revalidated = await service.readBytes({ path, ifNoneMatch: bytes.etag });
   assert.equal(revalidated.notModified, true);
   await assert.rejects(() => service.readBytes({ path: 'post/not-listed.png' }), /asset not found/);
-  await assert.rejects(() => service.readBytes({ path: 'post/Image Gallery/index.md' }), /asset not found/);
+  await assert.rejects(() => service.readBytes({ path: FIXTURE.bundle }), /asset not found/);
 });

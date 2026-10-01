@@ -5,18 +5,23 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { EDITOR_SECTIONS, createEditorServer } from '../server/index.js';
+import { FIXTURE, FIXTURE_CONTENT, FIXTURE_SITE, makeFixtureSandbox } from './fixtures/harness.js';
 
 const ROOT = join(import.meta.dirname, '..');
-const SITE_ROOT = '/projects/site';
-const CONTENT_ROOT = join(SITE_ROOT, 'content');
+// Read-only tests point straight at the fixture corpus (test/fixtures/README.md); tests that
+// write get a writable copy from makeFixtureSandbox instead.
+const SITE_ROOT = FIXTURE_SITE;
+const CONTENT_ROOT = FIXTURE_CONTENT;
 
-const ABOUT = 'page/about/index.md';
-const GALLERY = 'post/Image Gallery/index.md';
+const ABOUT = FIXTURE.page;
+// A leaf bundle with both languages and both of its image resources; the delete/restore test
+// works on the whole directory.
+const BUNDLE = FIXTURE.bundle;
+const BUNDLE_DIR = dirname(BUNDLE);
 
 function fakeBuildService() {
   const scheduled = [];
@@ -33,20 +38,15 @@ function fakeBuildService() {
   };
 }
 
-function makeSandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'hve-p3http-'));
-  const contentRoot = join(root, 'content');
-  cpSync(CONTENT_ROOT, contentRoot, { recursive: true });
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return { root, contentRoot, backupRoot: join(root, 'backups') };
-}
-
 async function withServer(run, sandbox, overrides = {}) {
   const buildService = overrides.buildService ?? fakeBuildService();
+  const siteRoot = sandbox?.siteRoot ?? SITE_ROOT;
   const server = createEditorServer({
-    siteRoot: SITE_ROOT,
+    siteRoot,
     contentRoot: sandbox?.contentRoot ?? CONTENT_ROOT,
+    configRoot: sandbox?.configRoot ?? join(SITE_ROOT, 'config', '_default'),
     backupRoot: sandbox?.backupRoot ?? join(ROOT, '.backups'),
+    publishDir: join(siteRoot, 'public'),
     sections: EDITOR_SECTIONS,
     editorDist: join(ROOT, 'dist'),
     watchSources: false,
@@ -86,12 +86,17 @@ test('the editor scope covers the whole content tree and reports it per section'
     assert.deepEqual(site.contentKinds, { article: ['post'], page: ['page'], taxonomy: ['categories', 'tags'] });
 
     const body = await (await fetch(`${base}/api/documents`)).json();
-    assert.equal(body.count, 51);
+    // The fixture corpus (test/fixtures/README.md): 20 Markdown documents. The '' scope is a
+    // recursive walk of the content root, so the fixture's `misc/` note and `tags/` page are
+    // reported too - hence 6 sections rather than the 4 the editor names.
+    assert.equal(body.count, 20);
     assert.deepEqual(body.sections, [
-      { section: 'post', label: 'post', count: 27 },
-      { section: 'page', label: 'page', count: 16 },
-      { section: 'categories', label: 'categories', count: 4 },
-      { section: '', label: '(根)', count: 4 },
+      { section: 'post', label: 'post', count: 9 },
+      { section: 'page', label: 'page', count: 5 },
+      { section: 'categories', label: 'categories', count: 2 },
+      { section: 'misc', label: 'misc', count: 1 },
+      { section: 'tags', label: 'tags', count: 1 },
+      { section: '', label: '(根)', count: 2 },
     ]);
 
     // Every document carries its section, kind and translation key - the list view needs
@@ -105,19 +110,21 @@ test('the editor scope covers the whole content tree and reports it per section'
 
     // The four types the site actually has, each read from the tree rather than assumed.
     const types = new Map(body.documents.map((doc) => [doc.path, doc.contentKind]));
-    assert.equal(types.get('post/pagination-test-01.en.md'), 'article');
-    assert.equal(types.get('page/about/index.md'), 'page');
-    assert.equal(types.get('categories/Documentation/_index.md'), 'category');
-    assert.equal(types.get('_index.md'), 'other');
+    assert.equal(types.get(FIXTURE.article), 'article');
+    assert.equal(types.get(ABOUT), 'page');
+    assert.equal(types.get(FIXTURE.category), 'category');
+    assert.equal(types.get(FIXTURE.home), 'other');
 
     // The category page's own image is a resource of that page, not an invisible file.
-    assert.ok(body.resources.some((resource) => resource.path === 'categories/Documentation/hutomo-abrianto-l2jk-uxb1BY-unsplash.jpg'));
+    assert.ok(body.resources.some((resource) => resource.path === FIXTURE.categoryResource));
 
     const group = body.groups.find((candidate) => candidate.translationKey === 'page/about/index');
-    assert.deepEqual([...group.languages].sort(), ['en', 'ja', 'zh', 'zh-hant-tw']);
+    // The fixture site declares two content languages (zh default + en), and the about page
+    // exists in both.
+    assert.deepEqual([...group.languages].sort(), ['en', 'zh']);
 
     // The home page is editable too, and so is a taxonomy landing page.
-    const home = await (await fetch(`${base}/api/documents/raw?path=${encodeURIComponent('_index.md')}`)).json();
+    const home = await (await fetch(`${base}/api/documents/raw?path=${encodeURIComponent(FIXTURE.home)}`)).json();
     assert.equal(home.kind, 'branch-bundle');
     assert.equal(home.contentKind, 'other');
     assert.equal(home.section, '');
@@ -126,7 +133,7 @@ test('the editor scope covers the whole content tree and reports it per section'
 });
 
 test('the front-matter form describes a document without rewriting it', async (t) => {
-  const sandbox = makeSandbox(t);
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-p3http-' });
   await withServer(async (base) => {
     const body = await (await fetch(`${base}/api/documents/fields?path=${encodeURIComponent(ABOUT)}`)).json();
 
@@ -137,7 +144,8 @@ test('the front-matter form describes a document without rewriting it', async (t
 
     const byPath = new Map(body.fields.map((field) => [field.path, field]));
     assert.equal(byPath.get('title').value, '关于');
-    assert.equal(byPath.get('date').value, '2026-01-26');
+    // The fixture about page's own date (page/about/index.md).
+    assert.equal(byPath.get('date').value, '2024-07-09');
     assert.equal(byPath.get('menu').editable, false);
     assert.equal(byPath.get('menu.main.weight').value, -90);
     assert.equal(byPath.get('menu.main.params.icon').value, 'user');
@@ -149,7 +157,7 @@ test('the front-matter form describes a document without rewriting it', async (t
 });
 
 test('the form previews a change, and the save is the only thing that writes', async (t) => {
-  const sandbox = makeSandbox(t);
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-p3http-' });
   await withServer(async (base, buildService) => {
     const before = disk(sandbox, ABOUT);
     const set = { title: '关于本站（改名）', tags: ['about', 'meta'] };
@@ -186,10 +194,10 @@ test('the form previews a change, and the save is the only thing that writes', a
     const after = disk(sandbox, ABOUT);
     assert.match(after, /title: 关于本站（改名）\n/);
     assert.match(after, /tags:\n {4}- about\n {4}- meta\n/);
-    // Everything the form did not touch is still there, byte for byte - down to the
-    // trailing space after `main:` that Hugo's own template wrote.
-    assert.match(after, /menu:\n {4}main: \n {8}weight: -90\n {8}params:\n {12}icon: user\n/);
-    assert.match(after, /## 这是给谁看的？/);
+    // Everything the form did not touch is still there, byte for byte - the fixture about
+    // page's own 4-space scalar block and its body heading.
+    assert.match(after, /menu:\n {4}main:\n {8}weight: -90\n {8}params:\n {12}icon: user\n/);
+    assert.match(after, /## 你好/);
 
     // Re-signing the same values is a no-op and does not start a build.
     const again = await (await postJson(base, '/api/documents/fields/save', { path: ABOUT, set: { title: '关于本站（改名）' }, confirm: true })).json();
@@ -200,7 +208,7 @@ test('the form previews a change, and the save is the only thing that writes', a
 });
 
 test('the form refuses to flatten a nested map and reports the right path', async (t) => {
-  const sandbox = makeSandbox(t);
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-p3http-' });
   await withServer(async (base) => {
     const before = disk(sandbox, ABOUT);
 
@@ -230,7 +238,7 @@ test('the form refuses to flatten a nested map and reports the right path', asyn
 });
 
 test('creating an article is planned before it is written', async (t) => {
-  const sandbox = makeSandbox(t);
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-p3http-' });
   await withServer(async (base, buildService) => {
     const request = { kind: 'standalone', section: 'post', title: 'HTTP Created Post', language: 'en' };
 
@@ -265,37 +273,39 @@ test('creating an article is planned before it is written', async (t) => {
 });
 
 test('deleting and restoring go through the trash, and closing the loop is explicit', async (t) => {
-  const sandbox = makeSandbox(t);
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-p3http-' });
   await withServer(async (base, buildService) => {
-    const request = { path: GALLERY };
+    const request = { path: BUNDLE };
 
     const planned = await (await postJson(base, '/api/documents/delete', request)).json();
     assert.equal(planned.planned, true);
     assert.equal(planned.scope, 'bundle');
-    assert.equal(planned.totalFiles, 8);
-    assert.equal(planned.documentCount, 4);
-    assert.equal(planned.resourceCount, 4);
-    assert.ok(planned.files.length === 8);
-    assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery')), true, 'planning deletes nothing');
+    // The fixture leaf bundle (test/fixtures/README.md): index.md + index.en.md and the two
+    // image resources it owns = 4 files.
+    assert.equal(planned.totalFiles, 4);
+    assert.equal(planned.documentCount, 2);
+    assert.equal(planned.resourceCount, 2);
+    assert.ok(planned.files.length === 4);
+    assert.equal(existsSync(join(sandbox.contentRoot, BUNDLE_DIR)), true, 'planning deletes nothing');
     assert.deepEqual(buildService.scheduled, [], 'planning builds nothing');
 
     const deleted = await (await postJson(base, '/api/documents/delete', { ...request, confirm: true })).json();
     assert.equal(deleted.deleted, true);
     assert.equal(deleted.buildScheduled, true);
-    assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery')), false);
+    assert.equal(existsSync(join(sandbox.contentRoot, BUNDLE_DIR)), false);
     assert.equal(buildService.scheduled.length, 1);
 
     const trash = await (await fetch(`${base}/api/trash`)).json();
     assert.equal(trash.entries.length, 1);
     assert.equal(trash.entries[0].id, deleted.trashId);
-    assert.equal(trash.entries[0].files, 8);
+    assert.equal(trash.entries[0].files, 4);
 
     // Restoring is a write too, so it also closes the loop.
     const restored = await (await postJson(base, '/api/trash/restore', { id: deleted.trashId, confirm: true })).json();
-    assert.equal(restored.relPath, 'post/Image Gallery');
+    assert.equal(restored.relPath, BUNDLE_DIR);
     assert.equal(restored.buildScheduled, true);
-    assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery/index.md')), true);
-    assert.equal(existsSync(join(sandbox.contentRoot, 'post/Image Gallery/florian-klauer-nptLmg6jqDo-unsplash.jpg')), true);
+    assert.equal(existsSync(join(sandbox.contentRoot, BUNDLE_DIR, 'index.md')), true);
+    assert.equal(existsSync(join(sandbox.contentRoot, BUNDLE_DIR, 'fixture-photo.jpg')), true);
     assert.equal(buildService.scheduled.length, 2);
 
     const missing = await postJson(base, '/api/trash/restore', { id: 'nope', confirm: true });
@@ -304,7 +314,7 @@ test('deleting and restoring go through the trash, and closing the loop is expli
 });
 
 test('a raw save on a site page goes through the same reviewed loop', async (t) => {
-  const sandbox = makeSandbox(t);
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-p3http-' });
   await withServer(async (base, buildService) => {
     const before = disk(sandbox, ABOUT);
 

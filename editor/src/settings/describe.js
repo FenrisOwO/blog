@@ -297,6 +297,9 @@ export function describeSettings({ siteRoot, configRoot = join(siteRoot, 'config
       row.arrayPath = setting.arrayPath;
       row.fields = setting.fields;
       row.iconOptions = theme.icons;
+      // Phosphor names and pictures the user picks are materialised as SVGs while the change is
+      // planned; the form only has to offer the names (see socialIcons.js).
+      row.phosphorIconOptions = theme.phosphorIcons ?? [];
       row.entries = menuEntries({ docs, arrayPath: setting.arrayPath, icons: theme.icons });
       described.rawMenu[setting.arrayPath] = row.entries;
       for (const entry of row.entries) {
@@ -378,6 +381,7 @@ export function describeSettings({ siteRoot, configRoot = join(siteRoot, 'config
       widgetTypes: theme.widgetTypes,
       commentProviders: theme.commentProviders,
       icons: theme.icons,
+      phosphorIcons: theme.phosphorIcons ?? [],
       readOnly: true,
     },
     languages: languageRows,

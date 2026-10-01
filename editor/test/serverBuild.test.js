@@ -5,15 +5,17 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createEditorServer } from '../server/index.js';
+import { FIXTURE, FIXTURE_CONTENT, FIXTURE_SITE, makeFixtureSandbox } from './fixtures/harness.js';
 
 const ROOT = join(import.meta.dirname, '..');
-const SITE_ROOT = '/projects/site';
-const CONTENT_ROOT = join(SITE_ROOT, 'content');
+// Read-only tests point at the corpus; writes go through a makeFixtureSandbox copy.
+const SITE_ROOT = FIXTURE_SITE;
+const CONTENT_ROOT = FIXTURE_CONTENT;
 
 function fakeBuildService() {
   const scheduled = [];
@@ -50,11 +52,8 @@ function fakeBuildService() {
 }
 
 function makeSandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'hve-buildhttp-'));
-  const contentRoot = join(root, 'content');
-  cpSync(CONTENT_ROOT, contentRoot, { recursive: true });
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return { contentRoot, backupRoot: join(root, 'backups') };
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-buildhttp-' });
+  return { contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot };
 }
 
 async function withServer(run, overrides = {}) {
@@ -62,6 +61,10 @@ async function withServer(run, overrides = {}) {
   const server = createEditorServer({
     siteRoot: SITE_ROOT,
     contentRoot: CONTENT_ROOT,
+    // createEditorServer defaults these to the real site; a fixture test must pin them so no
+    // request can reach the user's config or publish directory.
+    configRoot: join(SITE_ROOT, 'config', '_default'),
+    publishDir: join(SITE_ROOT, 'public'),
     // These tests describe the Phase 1/2 content API, so they pin the Phase 1 scope
     // explicitly. The editor itself runs with the wider scope (server/index.js
     // EDITOR_SECTIONS); that is asserted in test/serverPhase3.test.js.
@@ -154,7 +157,7 @@ test('a real save schedules a build so the preview follows the edit', async (t) 
   const sandbox = makeSandbox(t);
   await withServer(
     async (base, buildService) => {
-      const path = 'post/shortcodes/index.md';
+      const path = FIXTURE.article;
       const original = readFileSync(join(sandbox.contentRoot, path), 'utf8');
       const edited = original.replace('---\n', '---\nupdated: true\n');
 
@@ -174,7 +177,7 @@ test('a no-op save schedules nothing - it does not even touch the disk', async (
   const sandbox = makeSandbox(t);
   await withServer(
     async (base, buildService) => {
-      const path = 'post/shortcodes/index.md';
+      const path = FIXTURE.article;
       const original = readFileSync(join(sandbox.contentRoot, path), 'utf8');
 
       const response = await postJson(base, '/api/documents/save', { path, text: original, confirm: true });
@@ -194,7 +197,7 @@ test('a save without confirmation neither writes nor builds', async (t) => {
   await withServer(
     async (base, buildService) => {
       const response = await postJson(base, '/api/documents/save', {
-        path: 'post/shortcodes/index.md',
+        path: FIXTURE.article,
         text: 'changed',
       });
 

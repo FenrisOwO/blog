@@ -2,15 +2,17 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { createEditorServer } from '../server/index.js';
+import { FIXTURE, FIXTURE_CONTENT, FIXTURE_SITE, makeFixtureSandbox } from './fixtures/harness.js';
 
 const ROOT = join(import.meta.dirname, '..');
-const SITE_ROOT = '/projects/site';
-const CONTENT_ROOT = join(SITE_ROOT, 'content');
+// Read-only tests point straight at the fixture corpus (test/fixtures/README.md); tests that
+// write get a writable copy from makeFixtureSandbox instead.
+const SITE_ROOT = FIXTURE_SITE;
+const CONTENT_ROOT = FIXTURE_CONTENT;
 
 // Phase 2 added a build service and a source watcher to the server. These tests are
 // about the content API, so the build layer is stubbed: otherwise a confirmed save would
@@ -27,8 +29,9 @@ function stubBuildService() {
 }
 
 async function withServer(run, overrides = {}) {
+  const siteRoot = overrides.siteRoot ?? SITE_ROOT;
   const server = createEditorServer({
-    siteRoot: SITE_ROOT,
+    siteRoot,
     contentRoot: CONTENT_ROOT,
     // These tests describe the Phase 1/2 content API, so they pin the Phase 1 scope
     // explicitly. The editor itself runs with the wider scope (server/index.js
@@ -38,6 +41,12 @@ async function withServer(run, overrides = {}) {
     buildService: stubBuildService(),
     watchSources: false,
     buildOnStart: false,
+    // The settings layer is outside these tests' subject, but its config root must still be
+    // the fixture's so no request can reach the user's own config.
+    configRoot: join(siteRoot, 'config', '_default'),
+    // The preview layer only reads a published output; it is never derived from the site
+    // content, so a fixture server points it at the fixture's own (usually absent) public/.
+    publishDir: join(siteRoot, 'public'),
     ...overrides,
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -47,15 +56,6 @@ async function withServer(run, overrides = {}) {
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
-}
-
-// Save tests run against a throwaway copy so the real articles are never touched.
-function makeSandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'hve-http-'));
-  const contentRoot = join(root, 'content');
-  cpSync(CONTENT_ROOT, contentRoot, { recursive: true });
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return { contentRoot, backupRoot: join(root, 'backups') };
 }
 
 function postJson(base, route, payload) {
@@ -77,21 +77,24 @@ test('/api/health reports the section and languages', async () => {
   });
 });
 
-test('/api/documents lists the real articles without their contents', async () => {
+test('/api/documents lists the fixture articles without their contents', async () => {
   await withServer(async (base) => {
     const response = await fetch(`${base}/api/documents`);
     assert.equal(response.status, 200);
     const body = await response.json();
 
-    assert.equal(body.count, 27);
-    assert.equal(body.documents.length, 27);
-    assert.equal(body.resources.length, 5);
+    // The fixture's post section (test/fixtures/README.md): 9 Markdown documents - the
+    // article, second article and markdown bundle in both languages, the bundle in both
+    // languages, and the unsuffixed draft - plus the bundle's 2 image resources.
+    assert.equal(body.count, 9);
+    assert.equal(body.documents.length, 9);
+    assert.equal(body.resources.length, 2);
 
-    const doc = body.documents.find((candidate) => candidate.path === 'post/Image Gallery/index.en.md');
+    const doc = body.documents.find((candidate) => candidate.path === FIXTURE.bundleEn);
     assert.ok(doc);
     assert.equal(doc.kind, 'leaf-bundle');
     assert.equal(doc.language, 'en');
-    assert.equal(doc.meta.title, 'Image Gallery');
+    assert.equal(doc.meta.title, 'Fixture Bundle');
     assert.equal('text' in doc, false);
     assert.equal('frontMatterRaw' in doc, false);
   });
@@ -99,14 +102,16 @@ test('/api/documents lists the real articles without their contents', async () =
 
 test('/api/documents/raw returns the untouched Markdown source', async () => {
   await withServer(async (base) => {
-    const path = 'post/pagination-test-01.en.md';
+    const path = FIXTURE.article;
     const response = await fetch(`${base}/api/documents/raw?path=${encodeURIComponent(path)}`);
     assert.equal(response.status, 200);
 
     const body = await response.json();
     assert.equal(body.path, path);
     assert.equal(body.text, readFileSync(join(CONTENT_ROOT, path), 'utf8'));
-    assert.match(body.text, /^---\ntitle: Pagination Test 01\n/);
+    // The fixture article's front matter opens with its own title, which is what a raw
+    // read must hand back byte for byte.
+    assert.match(body.text, /^---\ntitle: Fixture Article\n/);
   });
 });
 
@@ -128,19 +133,30 @@ test('/editor/ serves the built Vue app', async () => {
   });
 });
 
-test('/ still serves the Hugo preview, and unknown paths 404', async () => {
-  await withServer(async (base) => {
-    const response = await fetch(`${base}/`);
-    assert.equal(response.status, 200);
+test('/ still serves the Hugo preview, and unknown paths 404', async (t) => {
+  // The preview is the published output, which is not site content: the test supplies its
+  // own one-file "build" instead of reading the user's public/.
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-http-' });
+  const publicRoot = join(sandbox.siteRoot, 'public');
+  mkdirSync(publicRoot, { recursive: true });
+  writeFileSync(join(publicRoot, 'index.html'), '<!doctype html><title>fixture preview</title>');
 
-    const missing = await fetch(`${base}/definitely-not-here`);
-    assert.equal(missing.status, 404);
-  });
+  await withServer(
+    async (base) => {
+      const response = await fetch(`${base}/`);
+      assert.equal(response.status, 200);
+      assert.match(await response.text(), /fixture preview/);
+
+      const missing = await fetch(`${base}/definitely-not-here`);
+      assert.equal(missing.status, 404);
+    },
+    { siteRoot: sandbox.siteRoot, contentRoot: sandbox.contentRoot, publishDir: publicRoot },
+  );
 });
 
 test('POST /api/documents/preview is a dry run end to end', async (t) => {
-  const sandbox = makeSandbox(t);
-  const path = 'post/pagination-test-01.en.md';
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-http-' });
+  const path = FIXTURE.article;
   const before = readFileSync(join(sandbox.contentRoot, path), 'utf8');
   const target = `${before}\n新增段落。\n`;
 
@@ -156,7 +172,7 @@ test('POST /api/documents/preview is a dry run end to end', async (t) => {
       assert.deepEqual(body.frontMatter.changedKeys, []);
       assert.equal(body.frontMatter.bodyChanged, true);
     },
-    { contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot },
+    { siteRoot: sandbox.siteRoot, contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot },
   );
 
   assert.equal(readFileSync(join(sandbox.contentRoot, path), 'utf8'), before);
@@ -164,8 +180,8 @@ test('POST /api/documents/preview is a dry run end to end', async (t) => {
 });
 
 test('POST /api/documents/save refuses to run without explicit confirmation', async (t) => {
-  const sandbox = makeSandbox(t);
-  const path = 'post/pagination-test-01.en.md';
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-http-' });
+  const path = FIXTURE.article;
   const before = readFileSync(join(sandbox.contentRoot, path), 'utf8');
 
   await withServer(
@@ -180,7 +196,7 @@ test('POST /api/documents/save refuses to run without explicit confirmation', as
         assert.match((await response.json()).error, /confirmation required/);
       }
     },
-    { contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot },
+    { siteRoot: sandbox.siteRoot, contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot },
   );
 
   assert.equal(readFileSync(join(sandbox.contentRoot, path), 'utf8'), before);
@@ -188,8 +204,8 @@ test('POST /api/documents/save refuses to run without explicit confirmation', as
 });
 
 test('POST /api/documents/save writes only after confirmation, with backup and read-back', async (t) => {
-  const sandbox = makeSandbox(t);
-  const path = 'post/pagination-test-01.en.md';
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-http-' });
+  const path = FIXTURE.article;
   const before = readFileSync(join(sandbox.contentRoot, path), 'utf8');
   const target = `${before}\n确认保存的段落。\n`;
 
@@ -209,14 +225,14 @@ test('POST /api/documents/save writes only after confirmation, with backup and r
       const fresh = await fetch(`${base}/api/documents/raw?path=${encodeURIComponent(path)}`);
       assert.equal((await fresh.json()).text, target);
     },
-    { contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot },
+    { siteRoot: sandbox.siteRoot, contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot },
   );
 
   assert.equal(readFileSync(join(sandbox.contentRoot, path), 'utf8'), target);
 });
 
 test('preview and save reject paths outside content/post', async (t) => {
-  const sandbox = makeSandbox(t);
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-http-' });
 
   await withServer(
     async (base) => {
@@ -228,7 +244,7 @@ test('preview and save reject paths outside content/post', async (t) => {
         assert.equal(save.status, 404, `save ${path}`);
       }
     },
-    { contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot },
+    { siteRoot: sandbox.siteRoot, contentRoot: sandbox.contentRoot, backupRoot: sandbox.backupRoot },
   );
 
   assert.equal(existsSync(sandbox.backupRoot), false);

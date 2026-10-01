@@ -3,19 +3,19 @@
 // The command engine is pure text, so preservation is testable exactly: apply a command in
 // one paragraph and assert that every byte outside it - front matter, comments, raw HTML,
 // shortcodes, Mermaid, math, footnotes, fenced code, `<!--more-->` - came back untouched.
-// Two fixtures are used: a document that contains one of everything, and the real site's
-// Markdown syntax guide, which is where those constructs actually live.
+// Two fixtures are used: a document that contains one of everything, and the fixture
+// corpus's Markdown document, which is where those constructs actually live.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { readDocument, splitDocument } from '../src/frontmatter/index.js';
 import { minimalChange, runCommand, toggleBold } from '../src/editorCore/markdown.js';
+import { FIXTURE as FIXTURE_DOCS, FIXTURE_SITE } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
-const REAL_DOC = join(SITE_ROOT, 'content', 'post', 'Markdown Syntax', 'index.md');
+const MARKDOWN_DOC = join(FIXTURE_SITE, 'content', FIXTURE_DOCS.markdown);
 
 const FIXTURE = `---
 title: "Everything"
@@ -174,12 +174,8 @@ test('every command is confined to the lines the user selected', () => {
   }
 });
 
-test('the real Markdown syntax guide survives every command, byte for byte', () => {
-  if (!existsSync(REAL_DOC)) {
-    assert.ok(true, 'real site is not present in this environment');
-    return;
-  }
-  const text = readFileSync(REAL_DOC, 'utf8');
+test('the fixture Markdown document survives every command, byte for byte', () => {
+  const text = readFileSync(MARKDOWN_DOC, 'utf8');
   const frontMatter = splitDocument(text).frontMatterRaw;
   const anchor = text.indexOf('## ');
   assert.ok(anchor > 0);

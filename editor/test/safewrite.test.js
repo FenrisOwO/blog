@@ -1,7 +1,8 @@
 // P1.2 acceptance tests.
 //
-// All writes happen inside a throwaway sandbox in the OS temp dir, seeded with a copy
-// of a real article. The project's own content tree is never modified by tests.
+// All writes happen inside a throwaway sandbox in the OS temp dir, seeded with a copy of a
+// fixture article (test/fixtures/README.md). The user's own content tree is never read or
+// modified by these tests.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,9 +13,9 @@ import { join } from 'node:path';
 import { PathGuard } from '../src/site/paths.js';
 import { diffLines, formatDiff, saveSafely } from '../src/site/safeWrite.js';
 import { saveDocument } from '../src/frontmatter/index.js';
+import { FIXTURE, FIXTURE_CONTENT } from './fixtures/harness.js';
 
-const REAL_CONTENT = process.env.HUGO_CONTENT_ROOT ?? '/projects/site/content';
-const SAMPLE_REL = 'post/pagination-test-01.en.md';
+const SAMPLE_REL = FIXTURE.article;
 
 function makeSandbox(t) {
   const root = mkdtempSync(join(tmpdir(), 'hve-'));
@@ -22,7 +23,7 @@ function makeSandbox(t) {
   mkdirSync(join(contentRoot, 'post'), { recursive: true });
   mkdirSync(join(contentRoot, 'page', 'about'), { recursive: true });
 
-  const sample = readFileSync(join(REAL_CONTENT, SAMPLE_REL), 'utf8');
+  const sample = readFileSync(join(FIXTURE_CONTENT, SAMPLE_REL), 'utf8');
   writeFileSync(join(contentRoot, SAMPLE_REL), sample);
   writeFileSync(join(contentRoot, 'page', 'about', 'index.md'), '---\ntitle: About\n---\n\nhi\n');
 

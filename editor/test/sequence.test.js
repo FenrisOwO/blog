@@ -25,11 +25,14 @@ import {
   setMapItemField,
   setScalarItem,
 } from '../src/frontmatter/sequence.js';
+import { FIXTURE, FIXTURE_CONTENT } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
-const LINKS = join(SITE_ROOT, 'content', 'page', 'links', 'index.md');
-const MARKDOWN_EN = join(SITE_ROOT, 'content', 'post', 'Markdown Syntax', 'index.en.md');
-const PAGINATION = join(SITE_ROOT, 'content', 'post', 'pagination-test-01.en.md');
+// Read-only tests, so they take the fixture documents straight from the corpus (test/fixtures/README.md)
+// instead of a sandbox copy. Two of them carry tags at different indentation: fixture-second.md uses
+// four-space list items, fixture-article.en.md two-space, and the block parser has to preserve each.
+const LINKS = join(FIXTURE_CONTENT, FIXTURE.links);
+const FOUR_SPACES = join(FIXTURE_CONTENT, FIXTURE.secondZh);
+const TWO_SPACES = join(FIXTURE_CONTENT, FIXTURE.article);
 
 function blockOf(text, key) {
   const parts = splitDocument(text);
@@ -46,7 +49,7 @@ function replaceBlock(parts, entry, block) {
   });
 }
 
-test('parses a real list of maps with its own indentation', () => {
+test('parses the fixture list of maps with its own indentation', () => {
   const { block } = blockOf(readFileSync(LINKS, 'utf8'), 'links');
   const parsed = parseSequenceBlock(block);
 
@@ -65,14 +68,14 @@ test('parses a real list of maps with its own indentation', () => {
       'image=https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png',
     ],
   );
-  assert.equal(parsed.items[1].fields.find((field) => field.key === 'image').value, 'ts-logo-128.jpg');
+  assert.equal(parsed.items[1].fields.find((field) => field.key === 'image').value, 'fixture-logo.jpg');
 });
 
 test('editing a link field changes one line and nothing else', () => {
   const original = readFileSync(LINKS, 'utf8');
   const { parts, entry, block } = blockOf(original, 'links');
   const parsed = parseSequenceBlock(block);
-  const next = setMapItemField(block, parsed.items[1], 'description', 'TypeScript 是 JavaScript 的超集。', { format: formatString });
+  const next = setMapItemField(block, parsed.items[1], 'description', '夹具的图片资源（已编辑）。', { format: formatString });
   const saved = replaceBlock(parts, entry, next);
 
   const before = original.split('\n');
@@ -80,32 +83,32 @@ test('editing a link field changes one line and nothing else', () => {
   assert.equal(before.length, after.length);
   const changed = before.map((line, index) => (line === after[index] ? null : index)).filter((index) => index !== null);
   assert.equal(changed.length, 1);
-  assert.match(after[changed[0]], /^ {4}description: TypeScript 是 JavaScript 的超集。$/);
+  assert.match(after[changed[0]], /^ {4}description: 夹具的图片资源（已编辑）。$/);
 
   // The body, the delimiter and every other key are byte-identical.
   const reparsed = splitDocument(saved);
   assert.equal(reparsed.bodyRaw, parts.bodyRaw);
   assert.equal(reparsed.delimiter, parts.delimiter);
   assert.equal(
-    reparsed.frontMatterRaw.replace('TypeScript 是 JavaScript 的超集。', 'TypeScript 是 JavaScript 的一个超集，它可以编译成纯 JavaScript。'),
+    reparsed.frontMatterRaw.replace('夹具的图片资源（已编辑）。', '夹具自带的图片资源。'),
     parts.frontMatterRaw,
   );
 });
 
 test('a sequence keeps its own list indentation when an item is rewritten', () => {
-  const fourSpaces = blockOf(readFileSync(MARKDOWN_EN, 'utf8'), 'tags');
+  const fourSpaces = blockOf(readFileSync(FOUR_SPACES, 'utf8'), 'tags');
   const parsedFour = parseSequenceBlock(fourSpaces.block);
   assert.equal(parsedFour.itemIndent, '    ');
-  assert.deepEqual(scalarValues(parsedFour), ['markdown', 'css', 'html', 'themes']);
+  assert.deepEqual(scalarValues(parsedFour), ['fixture']);
 
-  const twoSpaces = blockOf(readFileSync(PAGINATION, 'utf8'), 'tags');
+  const twoSpaces = blockOf(readFileSync(TWO_SPACES, 'utf8'), 'tags');
   const parsedTwo = parseSequenceBlock(twoSpaces.block);
   assert.equal(parsedTwo.itemIndent, '  ');
-  assert.deepEqual(scalarValues(parsedTwo), ['pagination', 'test']);
+  assert.deepEqual(scalarValues(parsedTwo), ['fixture', 'alpha']);
 });
 
 test('adding a tag appends one line and reuses every existing line byte-for-byte', () => {
-  const { block } = blockOf(readFileSync(MARKDOWN_EN, 'utf8'), 'tags');
+  const { block } = blockOf(readFileSync(FOUR_SPACES, 'utf8'), 'tags');
   const parsed = parseSequenceBlock(block);
   const next = rewriteScalarItems(block, parsed, [...scalarValues(parsed), 'acceptance'], { format: formatString });
 
@@ -113,24 +116,24 @@ test('adding a tag appends one line and reuses every existing line byte-for-byte
 });
 
 test('renaming a tag rewrites only that item', () => {
-  const { block } = blockOf(readFileSync(MARKDOWN_EN, 'utf8'), 'tags');
+  const { block } = blockOf(readFileSync(FOUR_SPACES, 'utf8'), 'tags');
   const parsed = parseSequenceBlock(block);
-  const next = rewriteScalarItems(block, parsed, ['markdown', 'css', 'html', 'Themes'], { format: formatString });
-  assert.equal(next, block.replace('    - themes\n', '    - Themes\n'));
+  const next = rewriteScalarItems(block, parsed, ['Fixture'], { format: formatString });
+  assert.equal(next, block.replace('    - fixture\n', '    - Fixture\n'));
 });
 
 test('removing a tag removes its line and keeps the rest', () => {
-  const { block } = blockOf(readFileSync(PAGINATION, 'utf8'), 'tags');
+  const { block } = blockOf(readFileSync(TWO_SPACES, 'utf8'), 'tags');
   const parsed = parseSequenceBlock(block);
-  const next = rewriteScalarItems(block, parsed, ['pagination'], { format: formatString });
-  assert.equal(next, 'tags:\n  - pagination\n');
+  const next = rewriteScalarItems(block, parsed, ['fixture'], { format: formatString });
+  assert.equal(next, 'tags:\n  - fixture\n');
 });
 
 test('a no-op rewrite is byte-identical', () => {
-  const { block } = blockOf(readFileSync(MARKDOWN_EN, 'utf8'), 'tags');
+  const { block } = blockOf(readFileSync(FOUR_SPACES, 'utf8'), 'tags');
   const parsed = parseSequenceBlock(block);
   assert.equal(rewriteScalarItems(block, parsed, scalarValues(parsed), { format: formatString }), block);
-  assert.equal(setScalarItem(block, parsed.items[0], 'markdown', { format: formatString }), block);
+  assert.equal(setScalarItem(block, parsed.items[0], 'fixture', { format: formatString }), block);
 });
 
 test('a scalar item keeps its comment, quotes and separator', () => {
@@ -186,7 +189,7 @@ test('items can be inserted, removed and moved without disturbing the others', (
   assert.equal(inserted.slice(0, block.length - 1), block.slice(0, block.length - 1));
 
   const removed = removeItem(inserted, insertedParsed.items[1]);
-  assert.ok(!removed.includes('TypeScript'));
+  assert.ok(!removed.includes('Fixture'));
   assert.ok(removed.includes('    description: GitHub 是世界上最大的软件开发平台。'));
   assert.deepEqual(parseSequenceBlock(removed).items.map((item) => item.fields[0].value), ['GitHub', 'Example']);
 
@@ -194,7 +197,7 @@ test('items can be inserted, removed and moved without disturbing the others', (
   const movedParsed = parseSequenceBlock(moved);
   assert.deepEqual(
     movedParsed.items.map((item) => item.fields[0].value),
-    ['TypeScript', 'Example', 'GitHub'],
+    ['Fixture', 'Example', 'GitHub'],
   );
   // The item that moved kept its bytes, including its description line.
   assert.ok(moved.includes('    description: GitHub 是世界上最大的软件开发平台。'));

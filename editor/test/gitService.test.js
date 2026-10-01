@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,6 +18,7 @@ import {
   GitValidationError,
   assertCommitMessage,
   assertSitePath,
+  classifyRepositoryFailure,
   classifyStatus,
   createGitService,
   parseNumstat,
@@ -105,6 +106,20 @@ test('a commit needs a real message', () => {
   assert.equal(assertCommitMessage('Update article metadata'), 'Update article metadata');
   assert.throws(() => assertCommitMessage('   '), /needs a message/);
   assert.throws(() => assertCommitMessage('x'.repeat(5000)), /longer than/);
+});
+
+test('the two ways a repository probe fails are told apart, because the advice differs', () => {
+  // The real text from `git`, so the classifier is checked against what git actually prints.
+  const ownership = classifyRepositoryFailure(
+    "fatal: detected dubious ownership in repository at '/projects'\n" +
+      'To add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /projects',
+  );
+  assert.deepEqual(ownership, { code: 'dubious-ownership', directory: '/projects' });
+  assert.deepEqual(classifyRepositoryFailure('fatal: not a git repository (or any parent): .git'), {
+    code: 'not-a-repository',
+    directory: null,
+  });
+  assert.equal(classifyRepositoryFailure('').code, 'unknown');
 });
 
 test('only allow-listed subcommands can be run, so no destructive git command exists', async () => {
@@ -281,3 +296,137 @@ test('committing an unchanged file reports the failure instead of inventing a co
   const service = createGitService({ siteRoot: dir, cacheMs: 0 });
   await assert.rejects(() => service.commit({ message: 'nothing to do', paths: ['README.md'] }), GitCommandError);
 });
+
+// --- Phase 9: the two halves of a change, and what a history row shows ------
+
+test('the staged and unstaged halves of a change are told apart, and each has its own diff', async () => {
+  const dir = repo();
+  const service = createGitService({ siteRoot: dir, cacheMs: 0 });
+  writeFileSync(join(dir, 'staged.md'), 'one\n');
+  git(dir, ['add', '--', 'staged.md']); // 'A ': in the index, nothing left in the worktree
+  writeFileSync(join(dir, 'README.md'), '# temp\nsecond\n'); // ' M': worktree only
+
+  const status = await service.status();
+  const byPath = Object.fromEntries(status.changes.map((change) => [change.path, change]));
+  assert.deepEqual([byPath['staged.md'].staged, byPath['staged.md'].unstaged], [true, false]);
+  assert.deepEqual([byPath['README.md'].staged, byPath['README.md'].unstaged], [false, true]);
+  assert.equal(status.counts.staged, 1);
+  assert.equal(status.counts.unstaged, 1);
+  assert.equal(status.counts.total, 2);
+
+  // A file that is only in the index has no worktree diff - which is exactly why the panel has
+  // to be able to ask for the staged one, or the row would open an empty page.
+  const plain = await service.diff({ path: 'staged.md' });
+  assert.equal(plain.text.trim(), '');
+  const cached = await service.diff({ path: 'staged.md', staged: true });
+  assert.equal(cached.staged, true);
+  assert.equal(cached.additions, 1);
+  assert.match(cached.text, /^\+one$/m);
+
+  // `MM`: staged and modified again. The two diffs are different questions and get different
+  // answers - the index against HEAD, and the worktree against the index.
+  writeFileSync(join(dir, 'README.md'), '# temp\nsecond\nthird\n');
+  git(dir, ['add', '--', 'README.md']);
+  writeFileSync(join(dir, 'README.md'), '# temp\nsecond\nthird\nfourth\n');
+  const both = (await service.status()).changes.find((change) => change.path === 'README.md');
+  assert.deepEqual([both.staged, both.unstaged], [true, true]);
+  const stagedHalf = await service.diff({ path: 'README.md', staged: true });
+  const worktreeHalf = await service.diff({ path: 'README.md' });
+  assert.match(stagedHalf.text, /^\+second$/m);
+  assert.doesNotMatch(stagedHalf.text, /fourth/);
+  assert.match(worktreeHalf.text, /^\+fourth$/m);
+  assert.doesNotMatch(worktreeHalf.text, /^\+second$/m);
+});
+
+test('committing everything leaves a clean status with nothing staged', async () => {
+  const dir = repo();
+  const service = createGitService({ siteRoot: dir, cacheMs: 0 });
+  writeFileSync(join(dir, 'a.md'), 'a\n');
+  writeFileSync(join(dir, 'b.md'), 'b\n');
+
+  await service.commit({ message: 'Add two files', paths: ['a.md', 'b.md'] });
+
+  const status = await service.status();
+  assert.equal(status.clean, true);
+  assert.deepEqual(status.changes, []);
+  assert.equal(status.counts.total, 0);
+  assert.equal(status.counts.staged, 0);
+  assert.equal(status.counts.unstaged, 0);
+});
+
+test('a history row is one patch, and a file outside the site is marked instead of faked', async () => {
+  const repoRoot = repo();
+  const siteRoot = join(repoRoot, 'site');
+  mkdirSync(join(siteRoot, 'content'), { recursive: true });
+  writeFileSync(join(siteRoot, 'content', 'a.md'), 'alpha\n');
+  writeFileSync(join(siteRoot, 'content', 'b.md'), 'beta\n');
+  writeFileSync(join(repoRoot, 'outside.txt'), 'not the editor\'s business\n');
+  git(repoRoot, ['add', '--', 'site/content', 'outside.txt']);
+  git(repoRoot, ['commit', '-q', '-m', 'two inside, one outside']);
+
+  const service = createGitService({ siteRoot, cacheMs: 0 });
+  const shown = await service.show({ sha: git(repoRoot, ['rev-parse', 'HEAD']) });
+
+  // One patch for the whole commit: clicking a history row must not need a second click.
+  assert.match(shown.text, /^\+alpha$/m);
+  assert.match(shown.text, /^\+beta$/m);
+  assert.match(shown.text, /content\/a\.md/);
+
+  const byRepoPath = Object.fromEntries(shown.files.map((file) => [file.repoPath, file]));
+  assert.deepEqual(Object.keys(byRepoPath).sort(), ['outside.txt', 'site/content/a.md', 'site/content/b.md']);
+  assert.equal(byRepoPath['site/content/a.md'].path, 'content/a.md');
+  assert.equal(byRepoPath['site/content/a.md'].outside, false);
+  assert.equal(byRepoPath['outside.txt'].path, null);
+  assert.equal(byRepoPath['outside.txt'].outside, true);
+  assert.equal(shown.files.every((file) => file.outside === (file.path === null)), true);
+
+  // Narrowing to one file still works, and yields only that file's patch.
+  const narrowed = await service.show({ sha: shown.commit.sha, path: 'content/a.md' });
+  assert.match(narrowed.text, /^\+alpha$/m);
+  assert.doesNotMatch(narrowed.text, /beta/);
+});
+
+test('ignored paths are never reported as user changes', async () => {
+  const dir = repo();
+  writeFileSync(join(dir, '.gitignore'), 'public/\nresources/\n*.tmp\n');
+  git(dir, ['add', '--', '.gitignore']);
+  git(dir, ['commit', '-q', '-m', 'ignore what the build writes']);
+  mkdirSync(join(dir, 'public'), { recursive: true });
+  writeFileSync(join(dir, 'public', 'index.html'), '<html></html>\n');
+  mkdirSync(join(dir, 'resources'), { recursive: true });
+  writeFileSync(join(dir, 'resources', '_gen'), 'cache\n');
+  writeFileSync(join(dir, 'scratch.tmp'), 'noise\n');
+  writeFileSync(join(dir, 'article.md'), 'a real edit\n');
+
+  const service = createGitService({ siteRoot: dir, cacheMs: 0 });
+  const status = await service.status();
+  assert.deepEqual(status.changes.map((change) => change.path), ['article.md']);
+  assert.equal(status.counts.untracked, 1);
+});
+
+test('reading the repository moves neither HEAD nor the index', async () => {
+  const dir = repo();
+  const service = createGitService({ siteRoot: dir, cacheMs: 0 });
+  writeFileSync(join(dir, 'new.md'), 'new\n');
+  writeFileSync(join(dir, 'other.md'), 'other\n');
+  writeFileSync(join(dir, 'README.md'), '# temp\nedited\n');
+
+  const headBefore = git(dir, ['rev-parse', 'HEAD']);
+  const indexBefore = readFileSync(join(dir, '.git', 'index'));
+
+  // Every read the panel can make, including the untracked branch that diffs against /dev/null.
+  await service.status();
+  await service.diff({ path: 'README.md' });
+  await service.diff({ path: 'new.md' });
+  await service.diff({ path: 'README.md', staged: true });
+  await service.diff({});
+  await service.log({ limit: 5 });
+  await service.show({ sha: headBefore });
+  await service.detectRepository({ force: true });
+
+  assert.equal(git(dir, ['rev-parse', 'HEAD']), headBefore, 'HEAD moved while only reading');
+  assert.deepEqual(readFileSync(join(dir, '.git', 'index')), indexBefore, 'the index moved while only reading');
+  const staged = git(dir, ['diff', '--cached', '--name-only']);
+  assert.equal(staged, '', 'reading staged something');
+});
+

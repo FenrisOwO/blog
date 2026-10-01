@@ -2,9 +2,10 @@
 //
 // The failures that matter cannot be produced honestly from a test (a disk that fills up, a
 // write that lands wrong), so the transaction takes its filesystem calls from one injectable
-// object. Everything else is real: real paths, real PathGuard, real atomic writes, real trash.
-// Each test asserts the same two things - what the tree looks like when it works, and that a
-// failure leaves it exactly as it was.
+// object. Everything else is real: real paths, real PathGuard, real atomic writes, real trash,
+// and a real copy of the fixture corpus (test/fixtures/README.md). Each test asserts the same
+// two things - what the tree looks like when it works, and that a failure leaves it exactly as
+// it was.
 
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -18,13 +19,13 @@ import { atomicWrite, diffLines } from '../src/site/safeWrite.js';
 import { listTrash } from '../src/site/trash.js';
 import { ChangeSetError, createChangeSet } from '../src/relations/changeSet.js';
 import { ChangeSetRejectedError, TransactionError, createTransaction } from '../src/relations/transaction.js';
+import { FIXTURE, FIXTURE_CONTENT } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
 const SECTIONS = ['post', 'page', 'categories'];
 
 function makeFixture() {
   const root = mkdtempSync(join(tmpdir(), 'tx-'));
-  cpSync(join(SITE_ROOT, 'content'), join(root, 'content'), { recursive: true });
+  cpSync(FIXTURE_CONTENT, join(root, 'content'), { recursive: true });
   const backupRoot = join(root, '.backups');
   mkdirSync(backupRoot, { recursive: true });
   // No '' in the writable roots here: this file is about the guard's refusals, and a scope that
@@ -55,11 +56,15 @@ function diff(before, after) {
   return changed.sort();
 }
 
-const A = 'post/pagination-test-01.en.md';
-const B = 'post/pagination-test-02.en.md';
+// Two standalone fixture articles, the document the tests modify and the one they delete.
+const A = FIXTURE.article;
+const B = FIXTURE.second;
 
-function editText(text, from, to) {
-  return text.replace(from, to);
+// A one-line edit of the document's own title: the tests care that the byte count and the
+// changed-line count are what the transaction reports, not what the title happens to be.
+function editedTitle(text) {
+  const title = text.match(/^title: (.+)$/m)[1];
+  return text.replace(`title: ${title}`, `title: ${title}（改名）`);
 }
 
 test('a change set describes itself: counts, diffs, moves and touched paths', () => {
@@ -114,7 +119,7 @@ test('committing a mixed change set applies every step and reads every step back
     const before = fingerprint(fixture.contentRoot);
 
     const set = createChangeSet({ operation: 'mixed' });
-    set.modify({ relPath: A, before: textA, after: editText(textA, '- pagination', '- Pagination') });
+    set.modify({ relPath: A, before: textA, after: editedTitle(textA) });
     set.create({ relPath: 'post/created.md', text: '---\ntitle: created\n---\n\nbody\n' });
     set.delete({ relPath: B, kind: 'file' });
     set.move({ from: 'tags/Old/_index.md', to: 'tags/New/_index.md', location: 'taxonomy' });
@@ -128,7 +133,7 @@ test('committing a mixed change set applies every step and reads every step back
     assert.equal(result.status, 'committed');
     assert.equal(result.applied.length, 4);
 
-    assert.equal(readFileSync(join(fixture.contentRoot, A), 'utf8'), editText(textA, '- pagination', '- Pagination'));
+    assert.equal(readFileSync(join(fixture.contentRoot, A), 'utf8'), editedTitle(textA));
     assert.equal(readFileSync(join(fixture.contentRoot, 'post/created.md'), 'utf8'), '---\ntitle: created\n---\n\nbody\n');
     assert.equal(existsSync(join(fixture.contentRoot, B)), false);
     assert.equal(existsSync(join(fixture.contentRoot, 'tags', 'Old', '_index.md')), false);
@@ -189,8 +194,8 @@ test('a write that fails rolls the whole set back and leaves no partial state', 
     const textB = readFileSync(join(fixture.contentRoot, B), 'utf8');
 
     const set = createChangeSet({ operation: 'failing write' });
-    set.modify({ relPath: A, before: textA, after: editText(textA, '- pagination', '- Pagination') });
-    set.modify({ relPath: B, before: textB, after: editText(textB, '- pagination', '- Pagination') });
+    set.modify({ relPath: A, before: textA, after: editedTitle(textA) });
+    set.modify({ relPath: B, before: textB, after: editedTitle(textB) });
     const built = set.build();
 
     // The second write fails, after the first has already been applied.
@@ -235,8 +240,8 @@ test('a write that lands wrong is caught by the read-back and rolled back', () =
     const textB = readFileSync(join(fixture.contentRoot, B), 'utf8');
 
     const set = createChangeSet({ operation: 'silent corruption' });
-    set.modify({ relPath: A, before: textA, after: editText(textA, '- pagination', '- Pagination') });
-    set.modify({ relPath: B, before: textB, after: editText(textB, '- pagination', '- Pagination') });
+    set.modify({ relPath: A, before: textA, after: editedTitle(textA) });
+    set.modify({ relPath: B, before: textB, after: editedTitle(textB) });
     const built = set.build();
 
     // The second write "succeeds" but writes something else - the failure a read-back exists for.
@@ -272,7 +277,7 @@ test('a delete is undone from the trash when a later step fails', () => {
 
     const set = createChangeSet({ operation: 'delete then fail' });
     set.delete({ relPath: B, kind: 'file' });
-    set.modify({ relPath: A, before: textA, after: editText(textA, '- pagination', '- Pagination') });
+    set.modify({ relPath: A, before: textA, after: editedTitle(textA) });
     const built = set.build();
 
     const transaction = createTransaction({
@@ -304,7 +309,7 @@ test('a move is undone and its new directory removed when a later step fails', (
 
     const set = createChangeSet({ operation: 'move then fail' });
     set.move({ from: 'tags/Old/_index.md', to: 'tags/New/_index.md', location: 'taxonomy' });
-    set.modify({ relPath: A, before: textA, after: editText(textA, '- pagination', '- Pagination') });
+    set.modify({ relPath: A, before: textA, after: editedTitle(textA) });
     const built = set.build();
 
     const transaction = createTransaction({
@@ -335,7 +340,7 @@ test('a created file is removed again when a later step fails', () => {
 
     const set = createChangeSet({ operation: 'create then fail' });
     set.create({ relPath: 'post/temporary.md', text: '---\ntitle: temporary\n---\n' });
-    set.modify({ relPath: A, before: textA, after: editText(textA, '- pagination', '- Pagination') });
+    set.modify({ relPath: A, before: textA, after: editedTitle(textA) });
     const built = set.build();
 
     const transaction = createTransaction({
@@ -362,8 +367,8 @@ test('a rollback that cannot finish says so instead of pretending', () => {
     const textA = readFileSync(join(fixture.contentRoot, A), 'utf8');
     const textB = readFileSync(join(fixture.contentRoot, B), 'utf8');
     const set = createChangeSet({ operation: 'rollback fails too' });
-    set.modify({ relPath: A, before: textA, after: editText(textA, '- pagination', '- Pagination') });
-    set.modify({ relPath: B, before: textB, after: editText(textB, '- pagination', '- Pagination') });
+    set.modify({ relPath: A, before: textA, after: editedTitle(textA) });
+    set.modify({ relPath: B, before: textB, after: editedTitle(textB) });
     const built = set.build();
 
     let writes = 0;

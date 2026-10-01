@@ -1,38 +1,30 @@
 // P1.5 acceptance tests: edit -> preview (dry run) -> commit -> read back.
 //
-// Every test works on a sandbox copy of the real content tree, so the project's own
-// articles are never modified by the suite.
+// Every test works on a copy of the fixture corpus (test/fixtures/README.md), so the suite
+// neither needs nor touches whatever the user has written in their own site.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 import { joinDocument, readDocument, splitDocument } from '../src/frontmatter/index.js';
 import { createDocumentService } from '../src/site/documentService.js';
 import { PathGuard } from '../src/site/paths.js';
 import { saveSafely } from '../src/site/safeWrite.js';
+import { FIXTURE, makeFixtureSandbox } from './fixtures/harness.js';
 
-const SITE_ROOT = '/projects/site';
-const REAL_CONTENT = join(SITE_ROOT, 'content');
-
-const SAMPLE = 'post/pagination-test-01.en.md';
-const BUNDLE = 'post/Image Gallery/index.md';
+const SAMPLE = FIXTURE.article;
+const BUNDLE = FIXTURE.bundle;
 
 function makeSandbox(t) {
-  const root = mkdtempSync(join(tmpdir(), 'hve-svc-'));
-  const contentRoot = join(root, 'content');
-  cpSync(REAL_CONTENT, contentRoot, { recursive: true });
-  const backupRoot = join(root, 'backups');
-  t.after(() => rmSync(root, { recursive: true, force: true }));
-  return { contentRoot, backupRoot };
+  return makeFixtureSandbox(t, { prefix: 'hve-svc-' });
 }
 
 function makeService(sandbox, options = {}) {
   return createDocumentService({
     contentRoot: sandbox.contentRoot,
-    siteRoot: SITE_ROOT,
+    siteRoot: sandbox.siteRoot,
     section: 'post',
     backupRoot: sandbox.backupRoot,
     ...options,
@@ -90,6 +82,8 @@ test('managed front matter field: exactly one line changes and siblings are inta
 
   const before = disk(sandbox, BUNDLE);
   const title = readDocument(before).values.title;
+  // `image` is a resource reference, not a typed form field, so read it off the raw text.
+  const image = splitDocument(before).frontMatterRaw.match(/^image: (.+)$/m)[1];
   const target = before.replace(`title: ${title}`, `title: ${title}（改名）`);
   assert.notEqual(target, before);
 
@@ -106,7 +100,7 @@ test('managed front matter field: exactly one line changes and siblings are inta
   assert.equal(result.onDiskMatchesTarget, true);
 
   const after = disk(sandbox, BUNDLE);
-  assert.match(after, /image: helena-hertz-wWZzXlDpMog-unsplash\.jpg/);
+  assert.match(after, new RegExp(`image: ${image}`), 'the sibling image field is untouched');
   assert.match(after, /toc: false/);
 });
 
@@ -143,13 +137,9 @@ test('shortcodes, Mermaid, math, fenced code and images survive a body edit', (t
   const sandbox = makeSandbox(t);
   const service = makeService(sandbox);
 
-  const targets = [
-    'post/shortcodes/index.md',
-    'post/mermaid-diagrams/index.en.md',
-    'post/Math Typesetting/index.en.md',
-    'post/Markdown Syntax/index.en.md',
-    BUNDLE,
-  ];
+  // One fixture document carries every construct (shortcode, Mermaid, math, fenced code, an
+  // image, a raw <div>, an excerpt marker); its language siblings and the bundle come along.
+  const targets = [FIXTURE.markdownZh, FIXTURE.markdown, BUNDLE];
 
   for (const path of targets) {
     const before = disk(sandbox, path);
@@ -298,27 +288,31 @@ test('an external edit of the same size is caught by the file signature, not the
   const sandbox = makeSandbox(t);
   const service = makeService(sandbox);
 
-  assert.equal(await titleOf(service, SAMPLE), 'Pagination Test 01');
-  const sameLength = disk(sandbox, SAMPLE).replace('title: Pagination Test 01', 'title: Pagination Test 99');
+  const title = readDocument(disk(sandbox, SAMPLE)).values.title;
+  assert.equal(await titleOf(service, SAMPLE), title);
+  // Same byte count, different bytes: only the file signature can catch this.
+  const other = `${title[0]}${'x'.repeat(title.length - 1)}`;
+  const sameLength = disk(sandbox, SAMPLE).replace(`title: ${title}`, `title: ${other}`);
   assert.equal(sameLength.length, disk(sandbox, SAMPLE).length, 'the rewrite keeps the byte count');
   writeFileSync(join(sandbox.contentRoot, SAMPLE), sameLength, 'utf8');
 
-  assert.equal(await titleOf(service, SAMPLE), 'Pagination Test 99', 'a listing is not allowed to serve a stale title');
-  assert.equal(service.fields(SAMPLE).fields.find((f) => f.key === 'title').value, 'Pagination Test 99');
+  assert.equal(await titleOf(service, SAMPLE), other, 'a listing is not allowed to serve a stale title');
+  assert.equal(service.fields(SAMPLE).fields.find((f) => f.key === 'title').value, other);
 });
 
 test('a bundle keeps its resources after a cached description is reused', async (t) => {
   const sandbox = makeSandbox(t);
   const service = makeService(sandbox);
 
-  const first = (await service.listResources()).filter((resource) => resource.path.startsWith('post/Image Gallery/'));
-  const second = (await service.listResources()).filter((resource) => resource.path.startsWith('post/Image Gallery/'));
+  const bundlePrefix = `${FIXTURE.bundle.slice(0, FIXTURE.bundle.lastIndexOf('/'))}/`;
+  const first = (await service.listResources()).filter((resource) => resource.path.startsWith(bundlePrefix));
+  const second = (await service.listResources()).filter((resource) => resource.path.startsWith(bundlePrefix));
   assert.ok(first.length > 0, 'the sample bundle has resources');
   assert.deepEqual(second, first, 'reusing a cached bundle description keeps the resources identical');
 
   // Adding a resource touches the bundle directory, which must invalidate that description.
-  writeFileSync(join(sandbox.contentRoot, 'post', 'Image Gallery', 'probe.png'), 'png');
-  const after = (await service.listResources()).filter((resource) => resource.path.startsWith('post/Image Gallery/'));
+  writeFileSync(join(sandbox.contentRoot, dirname(FIXTURE.bundle), 'probe.png'), 'png');
+  const after = (await service.listResources()).filter((resource) => resource.path.startsWith(bundlePrefix));
   assert.ok(after.some((resource) => resource.path.endsWith('probe.png')), 'a new resource is discovered');
   assert.equal(after.length, first.length + 1, 'and only it was added');
 });

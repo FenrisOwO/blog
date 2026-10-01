@@ -1,0 +1,14 @@
+rssFullContent = true
+
+[footer]
+    since = 2024
+
+[sidebar]
+    emoji = "🧪"
+
+[comments]
+    enabled  = false
+    provider = "disqus"
+
+[colorScheme]
+    default = "auto"

@@ -1774,6 +1774,92 @@ console.log('T18 Phase 8：git 服务（状态 / diff / 日志 / 提交）在临
   }
 }
 console.log('');
+console.log('T19 Phase 9：本地 git 工作流（Status → Diff → Commit → History → 提交 diff）在临时仓库上');
+{
+  const repoRoot = mkdtempSync(join(tmpdir(), 'hve-git9-'));
+  const siteRoot = join(repoRoot, 'site');
+  mkdirSync(join(siteRoot, 'content', 'post'), { recursive: true });
+  const git = createGitService({ siteRoot });
+
+  try {
+    execFileSync('git', ['init', '-q', '--initial-branch=main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'acceptance@example.com'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Acceptance'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, '.gitignore'), 'site/public/\nsite/resources/\n', 'utf8');
+    writeFileSync(join(siteRoot, 'content', 'post', 'article.md'), '# article\n', 'utf8');
+    writeFileSync(join(repoRoot, 'outside.txt'), 'not the editor\'s business\n', 'utf8');
+    execFileSync('git', ['add', '--', '.gitignore', 'site/content', 'outside.txt'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-q', '-m', 'T19 起始提交'], { cwd: repoRoot });
+
+    // Status: the index half and the worktree half are two different questions.
+    writeFileSync(join(siteRoot, 'content', 'post', 'staged.md'), '# staged\n', 'utf8');
+    execFileSync('git', ['add', '--', 'site/content/post/staged.md'], { cwd: repoRoot });
+    writeFileSync(join(siteRoot, 'content', 'post', 'article.md'), '# article\n\nedited\n', 'utf8');
+    mkdirSync(join(siteRoot, 'public'), { recursive: true });
+    writeFileSync(join(siteRoot, 'public', 'index.html'), '<html></html>\n', 'utf8');
+
+    const status = await git.status();
+    const byPath = Object.fromEntries(status.changes.map((change) => [change.path, change]));
+    check(status.repository !== null && status.branch === 'main', 'T19 临时仓库被识别，分支来自 git 本身', String(status.branch));
+    check(byPath['content/post/staged.md']?.staged === true && byPath['content/post/staged.md']?.unstaged === false, 'T19 只在索引里的文件：已暂存为真、未暂存为假');
+    check(byPath['content/post/article.md']?.staged === false && byPath['content/post/article.md']?.unstaged === true, 'T19 只在工作区的文件：未暂存为真');
+    check(status.counts.staged === 1 && status.counts.unstaged === 1, 'T19 状态分别统计已暂存与未暂存', JSON.stringify(status.counts));
+    check(!status.changes.some((change) => change.path.startsWith('..') || change.path.includes('outside')), 'T19 站点之外的文件不出现在编辑器的状态里');
+    check(!status.changes.some((change) => change.path.startsWith('public/')), 'T19 public/ 被 gitignore 时不进入变更列表', status.changes.map((c) => c.path).join(', '));
+
+    // Diff: a file that only lives in the index has no worktree diff, so both halves must answer.
+    const worktreeDiff = await git.diff({ path: 'content/post/staged.md' });
+    const stagedDiff = await git.diff({ path: 'content/post/staged.md', staged: true });
+    check(worktreeDiff.text.trim() === '' && worktreeDiff.staged === false, 'T19 索引里的改动在未暂存 diff 里为空（窗口本身不编造内容）');
+    check(stagedDiff.staged === true && stagedDiff.text.includes('+# staged'), 'T19 已暂存 diff 给出索引里的改动', stagedDiff.text.split('\n').slice(0, 3).join(' / '));
+
+    // Reading is not writing: HEAD and the index must be byte-identical afterwards.
+    const headBefore = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    const indexBefore = createHash('sha256').update(readFileSync(join(repoRoot, '.git', 'index'))).digest('hex');
+    await git.status();
+    await git.diff({});
+    await git.log({ limit: 5 });
+    await git.show({ sha: headBefore });
+    check(
+      execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim() === headBefore &&
+        createHash('sha256').update(readFileSync(join(repoRoot, '.git', 'index'))).digest('hex') === indexBefore,
+      'T19 读操作（status / diff / log / show）不移动 HEAD 与索引',
+    );
+
+    // Commit: exactly the ticked paths, and both halves end up empty.
+    const committed = await git.commit({ message: 'T19 提交两个文件', paths: ['content/post/staged.md', 'content/post/article.md'] });
+    const after = await git.status();
+    check(after.clean === true && after.counts.staged === 0 && after.counts.unstaged === 0, 'T19 提交后工作区干净、索引为空', JSON.stringify(after.counts));
+
+    // History: one patch per row, and clicking a file narrows it - not the other way round.
+    const shown = await git.show({ sha: committed.sha });
+    check(shown.text.includes('+# staged') && shown.text.includes('+edited'), 'T19 一次 show 就给出整次提交的补丁');
+    check(shown.files.length === 2 && shown.files.every((file) => file.outside === false && file.path !== null), 'T19 提交里的站点文件都不在站点之外');
+    const narrowed = await git.show({ sha: committed.sha, path: 'content/post/article.md' });
+    check(narrowed.text.includes('+edited') && !narrowed.text.includes('staged.md'), 'T19 点单个文件时只看该文件');
+
+    // A commit that reached outside the site names the file and refuses to invent a diff for it.
+    writeFileSync(join(repoRoot, 'outside.txt'), 'changed outside\n', 'utf8');
+    execFileSync('git', ['add', '--', 'outside.txt'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-q', '-m', 'T19 改动站点之外'], { cwd: repoRoot });
+    const outsideCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    const outsideShown = await git.show({ sha: outsideCommit });
+    const outsideFile = outsideShown.files.find((file) => file.repoPath === 'outside.txt');
+    check(outsideFile !== undefined && outsideFile.outside === true && outsideFile.path === null, 'T19 站点之外的文件被标记为 outside，而不是给出假的站点相对路径');
+
+    // A history row that has since been rewritten is a state, not a crash.
+    let unknown = null;
+    try {
+      await git.show({ sha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' });
+    } catch (cause) {
+      unknown = cause;
+    }
+    check(unknown !== null && unknown.name === 'GitUnknownCommitError', 'T19 不存在的提交是明确的状态错误', String(unknown && unknown.name));
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+console.log('');
 
 if (failures === 0) {
   console.log('P1 + P2 验收通过 ✅  写入路径显式、空操作逐字节一致、失败构建不发布、源树不被构建改动。');
@@ -1785,6 +1871,7 @@ if (failures === 0) {
   console.log('Phase 7 链接验收通过 ✅  links 列表按条目读、改、增删、排序，每次只动一行/一项，构建后的页面跟随变化，反向操作后源树与输出都逐字节还原。');
   console.log('Phase 8 Markdown 验收通过 ✅  工具栏 / 快捷键 / 斜杠命令 / 对话框都走同一张命令表，只改选中的文字，磁盘上的文档逐字节未动。');
   console.log('Phase 8 Git 验收通过 ✅  状态 / diff / 日志 / show 只读，提交只包含勾选的文件，破坏性命令不在白名单里。');
+  console.log('Phase 9 Git 工作流验收通过 ✅  已暂存/未暂存分开统计、各自有 diff，提交后索引为空，历史一行即整次提交的补丁，站点之外的文件被如实标记，读操作不移动 HEAD 与索引。');
 } else {
   console.log(`验收失败 ❌  ${failures} 项未通过`);
 }
