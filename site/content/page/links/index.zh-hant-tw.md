@@ -23,10 +23,19 @@ links:
 
     
   - title: X-里推
-    description: 没有那种好康的东西啦，更多是文艺b和负能。
+    description: 没有那种好康的东西，更多是文艺b和负能。
     website: https://x.com/FenrisDustbin
     image: X里推头像.jpg
 
+  - title: Discord
+    description: 看的不多，有一些tw和东南亚的朋友。
+    website: https://discord.gg/ckzVpN6S
+    image: dc头像.jpg
+
+  - title: Telegram
+    description: 查资料会用，较为隐私的对话也会在tg上聊。
+    website: http://t.me/fenrisuwu
+    image: tg头像.jpg
     
 menu:
   main:
