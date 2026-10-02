@@ -23,6 +23,7 @@ import { createDocumentService } from '../src/site/documentService.js';
 import { createRelationService, TagConflictError } from '../src/relations/relationService.js';
 import { PathGuard } from '../src/site/paths.js';
 import { saveSafely } from '../src/site/safeWrite.js';
+import { publicChangeSetPlan } from '../server/index.js';
 
 const EDITOR_ROOT = join(import.meta.dirname, '..');
 const SITE_ROOT = '/projects/site';
@@ -1254,11 +1255,17 @@ console.log('T15 Phase 7：真实站点标签关系（跨文档改名 / 同义�
         driver: '进程内 RelationService',
         list: () => relations.listTags(),
         detail: (name) => relations.tagDetail({ name }),
-        plan: (request) => (request.action === 'edit'
-          ? relations.planTagEdit(request)
-          : request.action === 'page'
-            ? relations.planTagPageCreate(request)
-            : relations.planTagRename({ from: request.from, to: request.to, mode: request.action })),
+        // Same shape as `/api/tags/plan`: the plan routes answer with the flattened change set,
+        // and the assertions below read it. Returning the raw plan here made this driver answer
+        // `undefined` for `plan.counts` - the shape is part of what the scenario checks.
+        plan: async (request) =>
+          publicChangeSetPlan(
+            await (request.action === 'edit'
+              ? relations.planTagEdit(request)
+              : request.action === 'page'
+                ? relations.planTagPageCreate(request)
+                : relations.planTagRename({ from: request.from, to: request.to, mode: request.action })),
+          ),
         apply: (request) => {
           const planned = request.action === 'edit'
             ? relations.planTagEdit(request)
@@ -1504,7 +1511,8 @@ console.log('T16 Phase 7：真实站点链接列表编辑（字段 / 新增 / �
     : {
         driver: '进程内 RelationService',
         view: (path) => relationsT16.links({ path }),
-        plan: (request) => relationsT16.planLinkEdits(request),
+        // Same shape as `/api/links/plan` (see the tags driver above).
+        plan: async (request) => publicChangeSetPlan(await relationsT16.planLinkEdits(request)),
         apply: async (request) => {
           const plan = await relationsT16.planLinkEdits(request);
           const result = relationsT16.apply(plan);

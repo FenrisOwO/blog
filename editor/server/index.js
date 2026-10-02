@@ -264,6 +264,34 @@ function publicDocument(doc) {
   };
 }
 
+// The public shape of a change-set plan: what the plan routes (`/api/tags/plan`,
+// `/api/links/plan`) answer with. It lives at module scope so a caller that plans in-process -
+// the acceptance script's driver when the editor server is stopped - can show exactly the shape
+// the HTTP API would have returned, instead of a second, drifting copy of the mapping. Pure.
+export function publicChangeSetPlan(plan) {
+  const { changeSet, review, ...rest } = plan;
+  return {
+    review,
+    operation: changeSet.operation,
+    counts: changeSet.counts,
+    noop: changeSet.noop,
+    text: changeSet.text,
+    warnings: changeSet.warnings,
+    unchanged: changeSet.unchanged,
+    touched: changeSet.touched,
+    changes: changeSet.changes.map((change) => ({
+      kind: change.kind,
+      relPath: change.relPath,
+      toPath: change.toPath ?? null,
+      location: change.location ?? null,
+      note: change.note ?? null,
+      diff: change.diff ?? null,
+      diffText: change.diffText,
+    })),
+    ...rest,
+  };
+}
+
 export function createEditorServer(options = {}) {
   const config = { ...DEFAULTS, ...options };
   const { languages, defaultLanguage } = readSiteLanguages({ siteRoot: config.siteRoot });
@@ -415,30 +443,6 @@ export function createEditorServer(options = {}) {
       remove: body.remove ?? [],
       move: body.move ?? [],
     });
-  }
-
-  function publicChangeSetPlan(plan) {
-    const { changeSet, review, ...rest } = plan;
-    return {
-      review,
-      operation: changeSet.operation,
-      counts: changeSet.counts,
-      noop: changeSet.noop,
-      text: changeSet.text,
-      warnings: changeSet.warnings,
-      unchanged: changeSet.unchanged,
-      touched: changeSet.touched,
-      changes: changeSet.changes.map((change) => ({
-        kind: change.kind,
-        relPath: change.relPath,
-        toPath: change.toPath ?? null,
-        location: change.location ?? null,
-        note: change.note ?? null,
-        diff: change.diff ?? null,
-        diffText: change.diffText,
-      })),
-      ...rest,
-    };
   }
 
   function apiError(res, error) {
