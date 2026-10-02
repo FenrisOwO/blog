@@ -16,10 +16,10 @@ Hugo can actually resolve into an image, checked before anything is written.
 ## Commands
 
 ```bash
-node --test          # full suite (416 tests)  — npm test
-node scripts/acceptance.mjs   # real-site gate (T1..T18) — npm run accept
+node --test          # full suite (490 tests)  — npm test
+node scripts/acceptance.mjs   # real-site gate (T1..T20) — npm run accept
 npm run build:web    # rebuild web/ -> dist/ (Vite + Vue 3)
-node server/index.js # run the editor on http://127.0.0.1:1313/editor/
+node server/index.js # run the editor on http://127.0.0.1:1314/editor/
 ```
 
 `npm run accept` is the gate that matters: it runs against the **real** site, hashes the
@@ -586,3 +586,127 @@ back: 21 modified / 12 deleted / 3 untracked). Still the same open decision as I
 script on the real site (and keep it red until the demo content is reconciled), or point it at a
 fixture copy. Phase 9 makes the second option cheaper - T18/T19 already prove the git layer works
 without touching the user's repository.
+
+**Re-measured 2026-10-02 (Phase Insert E session): 122 ✅ / 4 ❌ with no watching editor running** -
+the same content drift as before, plus one stale count:
+
+* T2 now fails on `输出中有 73 个 HTML 页面` - the tree gained `post/第壹篇.md` and
+  `post/红颜如霜.md` since the count was written (T1 prints 51 篇).
+* T10 (`Category 整页删除：4 语言 _index + 1 图片` and its companion) - the Documentation branch
+  bundle now carries 7 resources, so the change set is `{documents:4, resources:7, files:11}`.
+* T14 dies with the same `ENOENT` on `public/p/image-gallery/...` (the `draft: true` bundle).
+
+**Run the gate with the watching editor stopped.** With the 1314 instance alive
+(`watchSources:true`, `autoBuildOnSave:true`), the script's writes wake the editor's watcher, its
+build races the script's build into the same `/tmp/hugo-editor-build/.../output` and
+`site/public`, and two extra steps fail with `error copying static files: … woff2: no such file or
+directory` (measured: 120 ✅ / 6 ❌ with the editor up, 122 ✅ / 4 ❌ with it stopped). Those two are
+an artefact of the measurement, not a defect in the site or the script.
+
+## Phase 10 notes: the push (the second write, and the only one that leaves the machine)
+
+Reuse first again: two new endpoints (`GET /api/git/remote`, `POST /api/git/push`), no new dependency,
+no new UI primitive - the push box is built from the same pieces as the commit box it sits under.
+`POST /api/git/push` is `{remote?, setUpstream?, confirm?}`: **without** `confirm` it returns
+`{plan: {remote, branch, args, command, setUpstream, ahead}}` and writes nothing (not even a git
+command that touches the network); with `confirm: true` a refusal is a **409**
+`{error, reason, stderr, args}`.
+
+* **A plan is a decision about *now*, so it must not come out of a cache.** `gitService.js` caches
+  the repository probe for `cacheMs` (default 5s) so the status polls stay cheap, and `pushPlan` reads
+  the repository through `remoteStatus()` - which now calls `requireRepository({ force: true })`.
+  This is not paranoia: the T20 scenario (`checkout --detach`, then push) got the *cached* branch and
+  would have pushed the branch the user had just left. A display may be seconds stale; the branch a
+  push names may not. Regression test in `test/gitService.test.js` (a 60s-cache instance that switches
+  branch, then detaches, and asserts the plan and the refusal follow).
+* **Nothing shaped like an argument can reach the command line.** The argv is built in the service as
+  `['push', '--porcelain', '--no-verify', (--set-upstream)?, <remote>, <branch>]`, and the remote name
+  is matched against the output of `git remote` first - so `remote: '--force'` is a
+  `GitValidationError` ("unknown remote: --force"), not a force push. Asserted in the unit suite and
+  in T20.
+* **The service never fetches, never forces, never merges.** The allow-list gained `remote`,
+  `rev-list`, `push`; the T18 forbidden list gained `fetch` and `pull` so a later phase cannot add
+  either quietly. The consequence to keep: `ahead`/`behind` come from the *local* tracking ref, and a
+  branch with no upstream reports `ahead: null` rather than a made-up 0 - so the panel can honestly say
+  "nothing to push" and still be rejected by the remote, and the refusal is what tells the truth.
+  Do not "fix" the stale numbers by fetching.
+* **Credentials are neither stored nor accepted.** The push route's body has no username/token field,
+  and `redactCredentials` strips the whole userinfo section from every URL the service reports,
+  including those git echoes back in failure output. `GIT_TERMINAL_PROMPT=0` (already set for reads)
+  is what turns "waiting for a password" into a classified failure instead of a hung request.
+* **Failures are classified in the service, explained in the view.** `classifyPushFailure`
+  (`gitService.js`) maps git's stderr to a `reason`; `pushFailureNotice` / `pushBlockedReason`
+  (`web/gitView.js`) turn that into a title, an explanation and a copyable command. Check the
+  network/unreadable patterns **before** the "cannot read the repository" ones, or a DNS failure gets
+  reported as "this is not a git repository" (the reorder is in this phase for exactly that reason).
+  The raw stderr is always shown beside the classification - the classification is the editor's
+  understanding, the stderr is the evidence.
+* **Refusals change nothing.** A rejected push leaves HEAD, the index, the worktree, the tracking refs
+  and the remote exactly as they were (asserted in the unit suite and, against a real bare origin, in
+  T20). The plan half never touches the network.
+* **Acceptance: T20 is extracted, not reordered, when the gate stops early.** `npm run accept` on the
+  working tree still stops at T14 (`ENOENT` on `public/p/image-gallery/...`: the 相册 bundle carries
+  `draft: true` in all four languages so nothing is published; T15 would then want
+  `post/pagination-test-01.en.md`, deleted in `59ad158`). Both are site content, both now live in
+  commits rather than in the working tree - which also means the old Phase 9 trick
+  (`git checkout HEAD -- site`) no longer changes anything. T20 was run on its own (22/22 ✅) by
+  extracting the block; keep doing that rather than reordering the script or editing the site's
+  content to make the gate green.
+* **UI verification recipe that never touches the user's repository** (used for the push box; the site
+  copy is ~27 MB, delete it afterwards): `cp -a /projects/site /tmp/<dir>/site`, `git init` + one
+  commit there, `git init --bare --initial-branch=main origin.git` next to it, `git remote add origin`,
+  then start a second instance on the copy:
+  `createEditorServer({ siteRoot: '/tmp/<dir>/site', port: 8912, watchSources: false, autoBuildOnSave: false })`.
+  A peer clone (`git clone` the bare origin, commit, push) is the cheapest way to produce a realistic
+  rejection; the session that wrote this verified first push + upstream, the success state and the
+  refusal that way, with the user's repo and GitHub untouched.
+
+## Phase Insert E note (the reference model: which image reference Hugo can resolve)
+
+`content/post/第壹篇.md` had `image: categories/Documentation/6afdabb….jpg`. The theme's image
+hook (`$resource := $page.Resources.Get ...`) only resolves a **page resource**, so for a
+single-file post that value falls through to the Markdown destination, unprocessed: the built HTML
+carried `src="categories/Documentation/…"`, a URL relative to `/p/第壹篇/` - a 404 on the card and
+in the article, while the file itself is published at `/categories/documentation/…` (the branch
+page's own URL, from its `slug`). The editor had two producers of such a value - the image
+dialog's "insert reference" for a resource the page does not own, and the free-text cover field -
+and no checker.
+
+`src/site/referenceModel.js` is that checker, pure and filesystem-free:
+
+| value | verdict | rule |
+| --- | --- | --- |
+| `flat.png` (a resource of THIS bundle) | `page-resource` ok | nested paths keep their directory (`images/deep.png`, never `deep.png`) |
+| `<two words.png>` | `page-resource` ok | a space needs angle brackets, or Goldmark leaves the line as literal text |
+| `/img/logo.png` (a `static/` file) | `site-url` ok | site-root URL, valid from every page |
+| `/categories/documentation/x.jpg` | `site-url` ok **iff the last build published it** | a branch bundle publishes its resources under its own URL; publication decides, so a working URL is never refused for looking like a content path |
+| `categories/Documentation/x.jpg` | `source-path` / `foreign-resource` no | a content path is not a URL, and the case usually differs from the published one |
+| `content/…`, `static/…`, `assets/…` | `source-path` / `pipeline-asset` no | source trees are not referenceable; `static/…` gets a `/path` suggestion |
+| `image.png` in a single-file post | `no-bundle` no | only a bundle owns page resources |
+| `https://…`, `data:…`, `//…` | `external` ok | left alone |
+| `/x.png` the last build did not publish | `unpublished-url` no | "build once, or use the reference the panel gives you" |
+
+* **One implementation.** `referenceForResource` decides what a page resource is called;
+  `resourceModel.referenceFor` delegates to it for the assets listing, and the cover/typed-value
+  verdicts use it too - the panel cannot offer a reference the checker would refuse.
+* **Publication is checked first**, and that ordering is the invariant worth keeping: check the
+  content tree first and a legitimately published URL gets refused because a source file with
+  different capitalisation looks like it (a real bug in this phase, with the case in
+  `referenceModel.test.js`).
+* **Server:** `GET /api/documents/reference?path=&value=` answers one value on demand (the image
+  dialog calls it before inserting), and `/api/documents/fields` (GET **and** save) annotates a
+  document's `image` field with `{kind, ok, value, reason, suggestion}`. A save's response shape is
+  unchanged - verdicts are added, nothing removed. Note the shape: `saveFields` returns the
+  document *model* under `fields`, with the field array at `model.fields.fields`.
+* **UI:** `MarkdownDialogs.vue` refuses to insert a value the verdict rejects and shows the reason
+  plus the suggestion; `FieldForm.vue` shows the verdict under `封面图` before any save.
+* Tests: `test/referenceModel.test.js` (the decisions), `test/imageReferences.test.js` (one real
+  Hugo build of the fixture corpus + theme: flat, nested, card/detail agreement, CJK + space,
+  multilingual bundle, static URL vs another page's published URL vs a source path that really does
+  404), `test/serverReferences.test.js` (both endpoints, and that a save still answers as before).
+  Mutation-checked: returning the file name alone fails the nested case in both levels.
+* Limits (also in the manual, 15.6): `assets/` images cannot be referenced from Markdown at all,
+  and a single-file post can only use `static/` or another page's published URL. The theme's demo
+  bundle `post/Image Gallery/` references `image1.jpg` … `image4.jpg`, which do not exist (4 per
+  language file, 16 in all) - harmless today because all four files are `draft: true`, so the page
+  is not published. Left as content for the owner, not silently rewritten.
