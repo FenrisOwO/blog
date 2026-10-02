@@ -621,6 +621,16 @@ so a fixture has to carry both. Also open (cosmetic, not a 1.0 blocker): a *bran
 entry is labelled with its `_index.en.md` file, a *leaf* bundle's with its directory
 (`page/links`); both restore to the right place.
 
+**Re-measured in this session (the front-matter defect, Insert F): 8 ❌ / 2 ⚠️ skipped** - T16 only.
+The owner's `page/links/index.md` now carries four real links and seven new avatar resources, so the
+scenario's pinned demo expectations (2 items, an external GitHub logo + `ts-logo-128.jpg`) no longer
+describe the file: `Page 整包删除计划：4 语言 + 1 资源` reports
+`{"documents":4,"resources":8,"files":12}`, the key-order and image-kind checks read the owner's
+values, and the byte-restore checks compare against the *old* content. All eight fail identically on
+a clean `HEAD` worktree against the same site, so none of them is an editor regression - it is the
+same open decision as Insert C (keep the gate on the real site and keep it red until the demo
+content is reconciled, or point it at a fixture copy).
+
 **Run the gate with the watching editor stopped.** With the 1314 instance alive
 (`watchSources:true`, `autoBuildOnSave:true`), the script's writes wake the editor's watcher, its
 build races the script's build into the same `/tmp/hugo-editor-build/.../output` and
@@ -735,3 +745,52 @@ and no checker.
   bundle `post/Image Gallery/` references `image1.jpg` … `image4.jpg`, which do not exist (4 per
   language file, 16 in all) - harmless today because all four files are `draft: true`, so the page
   is not published. Left as content for the owner, not silently rewritten.
+
+## Insert F note (the front matter is YAML: the two paths that must refuse it)
+
+The owner's `site/content/page/links/index.md` lost the closing `---` of its front matter and
+carried four `image: ![](大号头像.jpg)` values; Hugo answered `assemble: failed to create page from
+pageMetaSource /page/links: "…/index.md:2:1": EOF looking for end YAML front matter delimiter`.
+Reproduced with `hugo build --ignoreCache --cleanDestinationDir` (so not the cache). The damage is
+also worse than a failed build: `splitDocument` reads an unterminated document as one with **no**
+front matter, so every field of that page would have been rewritten as body bytes.
+
+* **The cause is a language mix, not a typo.** Front matter is YAML and the body is Markdown, and
+  one buffer holds both - `image: ![](x.jpg)`, or a list's `- `, is Markdown written into the one
+  region the command table must not touch.
+* **One predicate, two guards.** `hasUnterminatedFrontMatter` (`frontmatter/split.js`: an opener
+  with no closer, which is exactly Hugo's reading) is used by
+  * `documentService.saveEdit` - the raw save refuses such a buffer with
+    `UnterminatedFrontMatterError` (400 via the server's error map) *before* `saveSafely`, so no
+    byte and no backup is written; `previewEdit` warns with the same reason and wording. The
+    invariant: a save can only ever produce a document Hugo can parse.
+  * `editorCore/markdown.js` - `runCommand`, `runSlashCommand` (checked *before* the `/query` is
+    removed, so a refusal does not eat the user's text) and `continueBlock` report
+    `blocked: 'front-matter'` for a caret or selection reaching into `frontMatterRaw`;
+    `MarkdownEditor.vue` emits it and `App.vue` toasts `FRONT_MATTER_NOT_MARKDOWN`. The body is
+    unchanged: the same helper still writes `![](example.jpg)` there.
+* **`links[].image` is a reference, not Markdown.** `normalizeImageReference` stores the
+  destination of a whole Markdown image (`![](<name.jpg> "title")` → `name.jpg`, CJK and spaces
+  included) and leaves anything it cannot read verbatim; `planLinkEdits` applies it to edits and
+  adds *before* `isSafeImageReference`, so unwrapping cannot launder `../../…`. The plan's shape is
+  otherwise identical (`normalized` appears only when it happened).
+* Tests: `frontmatter.test.js` (the predicate), `markdownPreservation.test.js` (nine commands
+  refused inside a real front matter, body still works, slash text survives, Enter is a newline),
+  `linkRelations.test.js` (plain/CJK/URL stay plain, Markdown unwrapped, unsafe still refused, the
+  normalizer's edge cases), `documentService.test.js` (a refused save writes nothing and leaves no
+  backup, the preview warning, a legal save keeps both delimiters and a body image),
+  `serverPhase3.test.js` (400, nothing written, no build scheduled).
+* Data repair on the owner's page: the four `image: ![](X.jpg)` values → `image: X.jpg`, and the
+  closing `---` re-added; no other byte touched. `hugo build` is clean (exit 0, the four avatars
+  render as bundle resources). The page's *body* - the theme's "this page's frontmatter" demo note,
+  which the same save dropped - is left as the owner wrote it, and reported rather than restored.
+* Measured state: the final unit suite is **504/504** (490 baseline + 14 new). Mid-session it
+  showed 2 failures in `test/assetsApi.test.js` (`scheduled` counts off by one after a *plan*); they
+  are environmental, and worth knowing about: `defaultOptions.publishDir` is the hardcoded real
+  `/projects/site/public` (`server/index.js`), so the startup-build gate
+  (`config.buildOnStart !== false && !existsSync(join(sitePublic, 'index.html'))`) fires inside those
+  temp-site tests whenever the real published output has no `index.html` - which is exactly what the
+  *failed* `hugo build --cleanDestinationDir` from the start of this session left behind. The same 2
+  failed on a clean `HEAD` worktree at that moment (same site, same missing output), so they were
+  never this change; after the repair's successful build they disappeared and the suite is green.
+* The real-site gate's 8 ❌ are the T16 content drift recorded above (identical at `HEAD`).

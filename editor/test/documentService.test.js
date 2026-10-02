@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'no
 import { dirname, join } from 'node:path';
 
 import { joinDocument, readDocument, splitDocument } from '../src/frontmatter/index.js';
-import { createDocumentService } from '../src/site/documentService.js';
+import { UnterminatedFrontMatterError, createDocumentService } from '../src/site/documentService.js';
 import { PathGuard } from '../src/site/paths.js';
 import { saveSafely } from '../src/site/safeWrite.js';
 import { FIXTURE, makeFixtureSandbox } from './fixtures/harness.js';
@@ -315,4 +315,48 @@ test('a bundle keeps its resources after a cached description is reused', async 
   const after = (await service.listResources()).filter((resource) => resource.path.startsWith(bundlePrefix));
   assert.ok(after.some((resource) => resource.path.endsWith('probe.png')), 'a new resource is discovered');
   assert.equal(after.length, first.length + 1, 'and only it was added');
+});
+
+// --- the raw save refuses to write an unparseable front matter ---------------
+//
+// The raw path exists so the editor can write what the user sees, byte for byte. What it must
+// not write is a document whose front matter never closes: Hugo answers that with
+// "EOF looking for end YAML front matter delimiter" and the page is unreachable until a human
+// edits it outside the editor.
+
+test('a save that drops the closing delimiter is refused and writes nothing (case D)', (t) => {
+  const sandbox = makeSandbox(t);
+  const service = makeService(sandbox);
+  const before = disk(sandbox, SAMPLE);
+
+  // Exactly the damage the editor produced: a `links` page whose YAML lost its closing `---`.
+  const damaged = ['---', 'title: "链接"', 'links:', '  - title: QQ-主号', '    image: 大号头像.jpg', ''].join('\n');
+  assert.throws(() => service.saveEdit({ path: SAMPLE, text: damaged }), UnterminatedFrontMatterError);
+  assert.equal(disk(sandbox, SAMPLE), before, 'the refused save must not touch the file');
+  assert.equal(existsSync(join(sandbox.backupRoot, '')), false, 'and must not leave a backup behind');
+
+  // The preview says what is wrong before the user tries to save.
+  const preview = service.previewEdit({ path: SAMPLE, text: damaged });
+  assert.equal(preview.status, 'preview');
+  assert.equal(preview.warnings.some((line) => line.includes('没有结尾')), true);
+  assert.equal(disk(sandbox, SAMPLE), before);
+});
+
+test('a well-formed save keeps the delimiters and a body image (case D, case C)', (t) => {
+  const sandbox = makeSandbox(t);
+  const service = makeService(sandbox);
+  const before = disk(sandbox, SAMPLE);
+
+  const withImage = appendToBody(before, '正文图片：![](keep-me.jpg)');
+  const result = service.saveEdit({ path: SAMPLE, text: withImage });
+  assert.equal(result.status, 'written');
+  assert.equal(result.onDiskMatchesTarget, true);
+
+  const after = disk(sandbox, SAMPLE);
+  const parts = splitDocument(after);
+  assert.equal(parts.hasFrontMatter, true, 'the saved file must still be parseable');
+  assert.equal(after.startsWith('---\n'), true);
+  assert.equal(parts.frontMatterRaw.endsWith('---'), true);
+  assert.equal(after.includes('![](keep-me.jpg)'), true, 'Markdown in the body is not touched');
+  assert.equal(splitDocument(before).frontMatterRaw, parts.frontMatterRaw, 'front matter unchanged');
 });

@@ -15,10 +15,18 @@
 //   2. A command that would change nothing returns the input unchanged, which is what keeps
 //      a no-op all the way down to a byte-identical file.
 //
+// Rule 1 has one hard edge the rest of the file cannot express by itself: the front matter is
+// YAML, so a Markdown command that runs there does not merely "change the selected text", it
+// changes the document's language. `image: ![](x.jpg)` and a list marker inside a `links:`
+// item are what that looks like, and the next Hugo build refuses the file. The commands below
+// therefore decline to run inside the front matter and report `blocked` instead.
+//
 // The entry points the UI uses are `COMMANDS` (the toolbar table), `runCommand`,
 // `continueBlock` (Enter inside a list or quote), `slashQuery` + `matchSlashCommands` +
 // `runSlashCommand` (the `/` menu) and `minimalChange` (turning a text+selection result
 // into the smallest editor change, so undo history stays meaningful).
+
+import { splitDocument } from '../frontmatter/split.js';
 
 const HEADING_MAX = 6;
 
@@ -49,8 +57,38 @@ export function selectionRange(selection) {
   return { from: Math.min(anchor, head), to: Math.max(anchor, head) };
 }
 
+// The front-matter region of a document as offsets, or null when the document has none.
+// The region is the opener, the YAML and the closer - the bytes `splitDocument` calls
+// `frontMatterRaw`.
+export function frontMatterRange(text) {
+  const source = String(text ?? '');
+  const parts = splitDocument(source);
+  return parts.hasFrontMatter ? { from: 0, to: parts.frontMatterRaw.length } : null;
+}
+
+// True when a selection would put Markdown into YAML: the caret is inside the front matter,
+// or the selection reaches into it from the body. Both are refusals, because either one would
+// rewrite YAML with Markdown syntax.
+export function insideFrontMatter(text, selection) {
+  const range = frontMatterRange(text);
+  if (!range) return false;
+  const sel = normalizeSelection(selection, String(text ?? '').length);
+  const { from, to } = selectionRange(sel);
+  return from < range.to || to < range.to;
+}
+
+export const FRONT_MATTER_NOT_MARKDOWN =
+  'Front Matter 是 YAML，不是 Markdown：标题、列表、图片、链接等命令只对正文生效，这里不会写入任何内容。';
+
 function result(text, from, to = from) {
   return { text, selection: { anchor: from, head: to } };
+}
+
+// The answer to a command that would have written Markdown into YAML: the text comes back
+// untouched (so the pipeline still sees a no-op) with the reason attached, which the UI turns
+// into a message instead of a mystery.
+function blockedResult(text, selection) {
+  return { ...result(text, selectionRange(selection).from), blocked: 'front-matter' };
 }
 
 export function changed(before, after) {
@@ -377,6 +415,9 @@ const LIST_LINE = /^(\s*)((?:[-*+]|\d+[.)]))\s+(\[[ xX]\]\s+)?(.*)$/;
 
 export function continueBlock(text, selection, { indent = '  ' } = {}) {
   const sel = normalizeSelection(selection, text.length);
+  // Enter inside the front matter is a plain newline: continuing a YAML line as if it were a
+  // Markdown list would add the `- ` of a list item to the user's YAML.
+  if (insideFrontMatter(text, sel)) return null;
   const { from, to } = selectionRange(sel);
   if (from !== to) return null;
   const start = lineStart(text, from);
@@ -567,6 +608,9 @@ export function matchSlashCommands(query, limit = 8) {
 // Removes the typed `/query` (it is UI, not content) and then runs the command.
 export function runSlashCommand(id, text, selection, arg = {}) {
   const sel = normalizeSelection(selection, text.length);
+  // Checked before the `/query` is removed: a refused command must not eat the user's slash
+  // text either.
+  if (insideFrontMatter(text, sel)) return blockedResult(text, sel);
   const query = slashQuery(text, selectionRange(sel).to);
   if (query) {
     const next = replaceRange(text, query.from, query.to, '');
@@ -612,5 +656,7 @@ export const COMMANDS = Object.freeze({
 export function runCommand(id, text, selection, arg = null) {
   const command = COMMANDS[id];
   if (!command) throw new Error(`unknown markdown command: ${id}`);
-  return command.run(text, normalizeSelection(selection, text.length), arg);
+  const sel = normalizeSelection(selection, text.length);
+  if (insideFrontMatter(text, sel)) return blockedResult(text, sel);
+  return command.run(text, sel, arg);
 }

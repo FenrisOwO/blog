@@ -13,7 +13,7 @@ import test from 'node:test';
 
 import { createDocumentService } from '../src/site/documentService.js';
 import { createRelationService } from '../src/relations/relationService.js';
-import { classifyLinkImage, isSafeImageReference, planLinkEdits, readLinks, renderNewLinksBlock } from '../src/relations/linkModel.js';
+import { classifyLinkImage, isSafeImageReference, normalizeImageReference, planLinkEdits, readLinks, renderNewLinksBlock } from '../src/relations/linkModel.js';
 import { FIXTURE, makeFixtureSandbox } from './fixtures/harness.js';
 
 const SECTIONS = ['post', 'page', 'categories', ''];
@@ -279,4 +279,81 @@ test('links survive a write of unrelated front matter fields', async (t) => {
   assert.equal(after, before.replace('comments: false', 'comments: true'));
   const frontMatterRaw = after.slice(after.indexOf('---') + 3, after.lastIndexOf('---'));
   assert.equal(readLinks(frontMatterRaw).items.length, 2);
+});
+
+// --- the image field is a YAML scalar, never Markdown ------------------------
+//
+// `image` names a path or a URL; the theme resolves it the way it resolves a cover image. A
+// value typed as `![](x.jpg)` is the same reference in the wrong language, and a Markdown image
+// in YAML can only ever be a broken reference - so the serializer stores the destination, and
+// the fixture page (two items, an external URL and a bundle resource) is the proof.
+
+test('a plain image path survives a rewrite as a plain YAML string (case A)', async (t) => {
+  const fixture = makeFixture(t);
+  const abs = join(fixture.contentRoot, LINKS_PATH);
+  const before = readFileSync(abs, 'utf8');
+
+  // Writing the value that is already there changes nothing at all.
+  const noop = await fixture.relations.planLinkEdits({ path: LINKS_PATH, edit: [{ index: 1, set: { image: 'fixture-logo.jpg' } }] });
+  assert.equal(noop.changeSet.noop, true);
+
+  const plan = await fixture.relations.planLinkEdits({ path: LINKS_PATH, edit: [{ index: 1, set: { image: 'fixture-photo-2.jpg' } }] });
+  fixture.relations.apply(plan);
+  const after = readFileSync(abs, 'utf8');
+  assert.equal(after, before.replace('image: fixture-logo.jpg', 'image: fixture-photo-2.jpg'));
+  assert.equal(after.includes('!['), false, 'a save must never introduce Markdown image syntax');
+});
+
+test('a Chinese image file name stays a legal YAML string (case B)', async (t) => {
+  const fixture = makeFixture(t);
+  const abs = join(fixture.contentRoot, LINKS_PATH);
+  const before = readFileSync(abs, 'utf8');
+
+  const plan = await fixture.relations.planLinkEdits({ path: LINKS_PATH, edit: [{ index: 1, set: { image: '空间号头像.jpg' } }] });
+  fixture.relations.apply(plan);
+  const after = readFileSync(abs, 'utf8');
+  assert.equal(after, before.replace('image: fixture-logo.jpg', 'image: 空间号头像.jpg'));
+  assert.equal(after.includes('!['), false);
+  // The rest of the file - the other link's bytes included - is untouched.
+  assert.equal(after.includes('image: https://github.githubassets.com/images/modules/logos_page/GitHub-Mark.png'), true);
+});
+
+test('Markdown image syntax in the image field is stored as its destination', async (t) => {
+  const fixture = makeFixture(t);
+  const abs = join(fixture.contentRoot, LINKS_PATH);
+
+  const plan = await fixture.relations.planLinkEdits({ path: LINKS_PATH, edit: [{ index: 1, set: { image: '![](空间号头像.jpg)' } }] });
+  fixture.relations.apply(plan);
+  const after = readFileSync(abs, 'utf8');
+  assert.equal(after.includes('image: 空间号头像.jpg'), true);
+  assert.equal(after.includes('!['), false, 'the YAML must hold the destination, not Markdown');
+
+  const added = await fixture.relations.planLinkEdits({ path: LINKS_PATH, add: [{ title: 'B站', website: 'https://space.bilibili.com/174863977', image: '![](b站头像.jpg)' }] });
+  fixture.relations.apply(added);
+  const withAdd = readFileSync(abs, 'utf8');
+  assert.equal(withAdd.includes('image: b站头像.jpg'), true);
+  assert.equal(withAdd.includes('!['), false);
+  // It is still a links list of three items that the model can read back.
+  assert.equal(readLinks(withAdd.slice(withAdd.indexOf('---') + 3, withAdd.lastIndexOf('---'))).items.length, 3);
+});
+
+test('unwrapping Markdown must not launder an unsafe image reference', () => {
+  const block = 'links:\n  - title: A\n    website: https://a.example\n    image: a.jpg\n';
+  const parsed = readLinks(`---\n${block}---\n`);
+  const escaped = planLinkEdits({ block: parsed.block, parsed: parsed.parsed, keyOrder: parsed.keyOrder, add: [{ title: 'B', website: 'https://b.example', image: '![](../../secret.png)' }] });
+  assert.equal(escaped.changed, false);
+  assert.equal(escaped.skipped[0].reason.includes('不是安全的引用'), true);
+  assert.equal(escaped.block.includes('secret'), false);
+});
+
+test('normalizeImageReference leaves everything it cannot read alone', () => {
+  assert.equal(normalizeImageReference('example.jpg'), 'example.jpg');
+  assert.equal(normalizeImageReference('![](example.jpg)'), 'example.jpg');
+  assert.equal(normalizeImageReference('![alt](../img/example.jpg)'), '../img/example.jpg');
+  assert.equal(normalizeImageReference('![](<example with space.jpg>)'), 'example with space.jpg');
+  assert.equal(normalizeImageReference('![](example.jpg "标题")'), 'example.jpg');
+  // Not one whole Markdown image: prose, a stray `)` or a title-only fragment is data.
+  assert.equal(normalizeImageReference('see ![](example.jpg) here'), 'see ![](example.jpg) here');
+  assert.equal(normalizeImageReference('![](a(b).jpg)'), '![](a(b).jpg)');
+  assert.equal(normalizeImageReference(''), '');
 });

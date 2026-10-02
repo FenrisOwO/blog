@@ -109,6 +109,29 @@ export function classifyLinkImage(value, { resourceNames = [], resourcePaths = [
   return { kind: 'missing-resource', value: trimmed, reason: '没有找到同名资源（Hugo 会当成外部路径处理）' };
 }
 
+// `image` is a YAML scalar naming a path or a URL - the theme resolves it the same way it
+// resolves an article's cover image. A value typed as Markdown image syntax is that same
+// reference written in the wrong language, so it is stored as its destination: YAML gets
+// `x.jpg`, never `![](x.jpg)`. The pattern is deliberately strict - it matches one whole
+// Markdown image with a parenthesised destination (optionally in angle brackets, optionally
+// with a title) and leaves anything else exactly as the user wrote it.
+const MARKDOWN_IMAGE = /^!\[[^\]]*\]\(\s*(<[^<>]*>|[^)\s]+)\s*(?:"[^"]*")?\s*\)$/;
+
+export function normalizeImageReference(value) {
+  const text = String(value ?? '').trim();
+  const match = MARKDOWN_IMAGE.exec(text);
+  if (!match) return value;
+  const wrapped = match[1];
+  const destination = wrapped.startsWith('<') && wrapped.endsWith('>') ? wrapped.slice(1, -1).trim() : wrapped;
+  return destination === '' ? value : destination;
+}
+
+// The string a given key is stored as. Only `image` has a shape rule: it is a reference, so
+// Markdown image syntax is unwrapped to its destination. Every other value is the caller's.
+function storedValue(key, value) {
+  return key === 'image' ? normalizeImageReference(value) : value;
+}
+
 // The plan for one document's links: edit existing fields, add items, remove items, reorder.
 //
 // Index contract: every index, `from` and `to` the caller sends addresses the list as it was
@@ -144,12 +167,17 @@ export function planLinkEdits({ block, parsed, keyOrder = LINK_KEYS, edit = [], 
         skipped.push({ action: 'edit', index, key, reason: '空值不写入' });
         continue;
       }
-      if (present && String(item.fields.find((field) => field.key === key).value) === String(value)) {
-        applied.push({ action: 'edit', index, key, value: String(value), unchanged: true });
+      // The image field holds a reference, not Markdown: `![](x.jpg)` is written as `x.jpg`.
+      const wanted = key === 'image' ? normalizeImageReference(value) : value;
+      const entry = { action: 'edit', index, key, value: String(wanted) };
+      // Only present when it happened, so the plan's shape is unchanged for every other edit.
+      if (wanted !== value) entry.normalized = true;
+      if (present && String(item.fields.find((field) => field.key === key).value) === String(wanted)) {
+        applied.push({ ...entry, unchanged: true });
         continue;
       }
-      next = setMapItemField(next, item, key, value, { format: formatString });
-      applied.push({ action: 'edit', index, key, value: String(value) });
+      next = setMapItemField(next, item, key, wanted, { format: formatString });
+      applied.push(entry);
     }
   }
 
@@ -200,13 +228,14 @@ export function planLinkEdits({ block, parsed, keyOrder = LINK_KEYS, edit = [], 
       skipped.push({ action: 'add', reason: `缺少必填字段：${missing.join(', ')}` });
       continue;
     }
-    if (entry.image !== undefined && entry.image !== null && entry.image !== '' && !isSafeImageReference(entry.image)) {
-      skipped.push({ action: 'add', reason: `image 不是安全的引用：${entry.image}` });
+    const image = storedValue('image', entry.image);
+    if (image !== undefined && image !== null && image !== '' && !isSafeImageReference(image)) {
+      skipped.push({ action: 'add', reason: `image 不是安全的引用：${image}` });
       continue;
     }
     const fields = keyOrder
       .filter((key) => entry[key] !== undefined && entry[key] !== null && entry[key] !== '')
-      .map((key) => ({ key, value: String(entry[key]) }));
+      .map((key) => ({ key, value: String(storedValue(key, entry[key])) }));
     const rendered = renderMapItem(fields, {
       itemIndent: parsed.itemIndent,
       fieldIndent: parsed.fieldIndent,
@@ -235,7 +264,7 @@ export function isSafeImageReference(value) {
 export function renderNewLinksBlock(items, { itemIndent = '  ', fieldIndent = '    ', keyOrder = LINK_KEYS } = {}) {
   const rendered = items.map((item) =>
     renderMapItem(
-      keyOrder.filter((key) => item[key] !== undefined && item[key] !== null && item[key] !== '').map((key) => ({ key, value: String(item[key]) })),
+      keyOrder.filter((key) => item[key] !== undefined && item[key] !== null && item[key] !== '').map((key) => ({ key, value: String(storedValue(key, item[key])) })),
       { itemIndent, fieldIndent, format: formatString },
     ),
   );

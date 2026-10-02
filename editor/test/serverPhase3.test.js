@@ -330,3 +330,22 @@ test('a raw save on a site page goes through the same reviewed loop', async (t) 
     assert.match(disk(sandbox, ABOUT), /新增段落。/);
   }, sandbox);
 });
+
+// The raw save's front-matter refusal, over HTTP: a 400 that says why, nothing written, and no
+// build scheduled (a failed save must not publish anything).
+test('POST /api/documents/save refuses an unterminated front matter with 400', async (t) => {
+  const sandbox = makeFixtureSandbox(t, { prefix: 'hve-srv-save-' });
+  await withServer(async (base, buildService) => {
+    const before = readFileSync(join(sandbox.contentRoot, ABOUT), 'utf8');
+    const damaged = ['---', 'title: 链接', 'links:', '  - title: QQ-主号', ''].join('\n');
+
+    const response = await postJson(base, '/api/documents/save', { path: ABOUT, text: damaged, confirm: true });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.path, ABOUT);
+    assert.match(body.error, /front matter/);
+
+    assert.equal(readFileSync(join(sandbox.contentRoot, ABOUT), 'utf8'), before);
+    assert.equal(buildService.scheduled.length, 0, 'a refused save schedules no build');
+  }, sandbox);
+});

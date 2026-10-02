@@ -3,7 +3,7 @@
 // The raw text is the source of truth: every helper round-trips unrecognised content
 // untouched, and saveDocument() returns the original string when nothing changed.
 
-import { splitDocument, joinDocument } from './split.js';
+import { splitDocument, joinDocument, hasUnterminatedFrontMatter } from './split.js';
 import { parseFrontMatter, readEntryValue, readValues } from './parse.js';
 import { appendFrontMatterKeys, patchFrontMatter, formatScalar, formatString, isKeyName, detectListIndent } from './patch.js';
 import { applyFieldEdits, describeFields, missingFields, FIELD_CATALOG, MAX_NESTED_DEPTH } from './fields.js';
@@ -37,6 +37,7 @@ export function saveDocument(originalText, changes = {}, body) {
 export {
   splitDocument,
   joinDocument,
+  hasUnterminatedFrontMatter,
   parseFrontMatter,
   readEntryValue,
   readValues,

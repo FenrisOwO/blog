@@ -36,7 +36,7 @@ import { buildCommands } from './commands.js';
 import { createThemeStore } from './theme.js';
 import { createToastStore } from './toast.js';
 
-import { findLink } from '../src/editorCore/markdown.js';
+import { FRONT_MATTER_NOT_MARKDOWN, findLink } from '../src/editorCore/markdown.js';
 
 const documents = ref([]);
 const loadingDocuments = ref(true);
@@ -642,11 +642,21 @@ function openMarkdownDialog({ id }) {
   existingLink.value = id === 'link' ? findLink(text, selection) : null;
 }
 
+// Set while a dialog is being applied, so a refusal from the command engine is reported once
+// - as the reason it was refused - instead of as the generic "nothing was inserted".
+let blockedByDialog = false;
+
+function onEditorBlocked() {
+  blockedByDialog = true;
+  toasts.warning('Front Matter 不是 Markdown', { text: FRONT_MATTER_NOT_MARKDOWN });
+}
+
 function applyMarkdownDialog({ id, arg }) {
+  blockedByDialog = false;
   const applied = editorRef.value?.applyDialog(id, arg);
   mdDialog.value = '';
   existingLink.value = null;
-  if (applied === false) {
+  if (applied === false && !blockedByDialog) {
     toasts.warning('没有插入任何内容', { text: '编辑期间内容发生了变化，请重试。' });
   }
 }
@@ -951,6 +961,7 @@ onUnmounted(() => {
                   @change="currentText = $event"
                   @selection="onEditorSelection"
                   @dialog="openMarkdownDialog"
+                  @blocked="onEditorBlocked"
                 />
                 <div v-if="preview || saveResult" class="panel docs">
                   <div v-if="preview" class="panel-head">

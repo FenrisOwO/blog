@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { applyFieldEdits, compareFrontMatter, describeFields, missingFields, splitDocument } from '../frontmatter/index.js';
+import { applyFieldEdits, compareFrontMatter, describeFields, hasUnterminatedFrontMatter, missingFields, splitDocument } from '../frontmatter/index.js';
 
 import {
   describeDocument,
@@ -42,6 +42,17 @@ export class DocumentNotFoundError extends Error {
   constructor(path) {
     super(`document not found: ${path}`);
     this.name = 'DocumentNotFoundError';
+    this.path = path;
+  }
+}
+
+// A raw save that would leave the front matter open. Hugo refuses to build such a file
+// ("EOF looking for end YAML front matter delimiter") and the editor's own model then reads it
+// as a document with no front matter, so it is always damage, never an edit.
+export class UnterminatedFrontMatterError extends Error {
+  constructor(path) {
+    super('front matter 缺少结尾的 ---，Hugo 无法解析这个文件；保存已取消，没有写入任何字节');
+    this.name = 'UnterminatedFrontMatterError';
     this.path = path;
   }
 }
@@ -229,7 +240,12 @@ export function createDocumentService({
     const frontMatter = compareFrontMatter(originalText, text);
 
     const warnings = [];
-    if (frontMatter.hasFrontMatter.original && !frontMatter.hasFrontMatter.target) {
+    // An open-but-never-closed front matter is not "the front matter will be removed" - the
+    // document is not parseable at all, and saveEdit refuses it. Say which one it is.
+    const unterminated = splitDocument(originalText).hasFrontMatter && hasUnterminatedFrontMatter(text);
+    if (unterminated) {
+      warnings.push('front matter 有开始没有结尾（Hugo 会报 EOF），保存会被拒绝');
+    } else if (frontMatter.hasFrontMatter.original && !frontMatter.hasFrontMatter.target) {
       warnings.push('front matter 将被移除');
     }
     if (frontMatter.unknownChangedKeys.length > 0) {
@@ -255,6 +271,12 @@ export function createDocumentService({
   // write, the no-op guard and the read-back check.
   function saveEdit({ path, text }) {
     const { text: originalText } = read(path);
+    // The raw path writes whatever the editor buffer holds, which is the point (the raw text
+    // stays the source of truth) - except when the buffer lost the closing delimiter, because
+    // that is not an edit the user can mean: it is a file Hugo cannot parse.
+    if (splitDocument(originalText).hasFrontMatter && hasUnterminatedFrontMatter(text)) {
+      throw new UnterminatedFrontMatterError(path);
+    }
     const result = saveSafely({ guard, relPath: path, nextText: text, backupRoot, dryRun: false });
     forget(path);
     const onDisk = readFileSync(join(contentRoot, path), 'utf8');

@@ -28,7 +28,7 @@ import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { createBuildService, createSourceWatcher, defaultBuildPaths, defaultHugoBin, probeNativeWatch, readHugoVersion } from '../src/build/index.js';
 import { readSiteLanguages } from '../src/site/contentReader.js';
 import { AssetNotFoundError, AssetValidationError, createAssetService } from '../src/site/assetService.js';
-import { DocumentNotFoundError, createDocumentService } from '../src/site/documentService.js';
+import { DocumentNotFoundError, UnterminatedFrontMatterError, createDocumentService } from '../src/site/documentService.js';
 import { DocumentExistsError } from '../src/site/safeWrite.js';
 import { TrashEntryNotFoundError } from '../src/site/trash.js';
 import { ConfigFileNotFoundError } from '../src/settings/configGuard.js';
@@ -452,6 +452,12 @@ export function createEditorServer(options = {}) {
     }
     if (error instanceof DocumentExistsError) {
       sendJson(res, 409, { error: error.message, path: error.path });
+      return;
+    }
+    if (error instanceof UnterminatedFrontMatterError) {
+      // The edit is well-formed JSON and the path is writable; what is wrong is the document
+      // itself, so it is the caller's 400 and nothing was written.
+      sendJson(res, 400, { error: error.message, path: error.path });
       return;
     }
     if (error instanceof SettingsValidationError) {

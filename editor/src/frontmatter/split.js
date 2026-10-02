@@ -62,6 +62,14 @@ export function splitDocument(text) {
   };
 }
 
+// A document that opens a front matter block and never closes it. Hugo cannot parse this
+// ("EOF looking for end YAML front matter delimiter"), and this module's own split sees such
+// a document as having no front matter at all - so it is a state a save must never produce.
+export function hasUnterminatedFrontMatter(text) {
+  const source = String(text ?? '');
+  return matchOpener(source) !== null && !splitDocument(source).hasFrontMatter;
+}
+
 export function joinDocument({ frontMatterRaw = '', separator = '', bodyRaw = '' } = {}) {
   return frontMatterRaw + separator + bodyRaw;
 }

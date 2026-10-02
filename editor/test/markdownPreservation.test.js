@@ -12,7 +12,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { readDocument, splitDocument } from '../src/frontmatter/index.js';
-import { minimalChange, runCommand, toggleBold } from '../src/editorCore/markdown.js';
+import { continueBlock, minimalChange, runCommand, runSlashCommand, toggleBold } from '../src/editorCore/markdown.js';
 import { FIXTURE as FIXTURE_DOCS, FIXTURE_SITE } from './fixtures/harness.js';
 
 const MARKDOWN_DOC = join(FIXTURE_SITE, 'content', FIXTURE_DOCS.markdown);
@@ -188,4 +188,82 @@ test('the fixture Markdown document survives every command, byte for byte', () =
     assert.ok(change === null || change.from >= anchor - 1, `${id} changed something before the caret`);
     assert.ok(change === null || change.to <= text.indexOf('\n', anchor) + 1, `${id} changed a later line`);
   }
+});
+
+// --- the front matter is YAML, so no command writes Markdown into it ---------
+//
+// This is the defect these tests exist for. The image helper used to write `![alt](src)`
+// wherever the caret happened to be - and the caret can be inside the front matter, because the
+// editor edits the whole document. That is how a links page came back with
+// `image: ![](大号头像.jpg)` in its YAML and a Hugo build that refused to run.
+
+const LINKS_LIKE = [
+  '---',
+  'title: "链接"',
+  'links:',
+  '  - title: QQ-主号',
+  '    image: 大号头像.jpg',
+  'menu:',
+  '  main:',
+  '    weight: -50',
+  '---',
+  '',
+  '正文里的图片：![](keep-me.jpg)',
+  '',
+].join('\n');
+
+test('every command is refused inside the front matter, and the YAML is untouched', () => {
+  const caret = paragraphRange(LINKS_LIKE, '大号头像.jpg').from;
+  const cases = [
+    ['image', { src: 'example.jpg', alt: '' }],
+    ['link', { url: 'https://example.com' }],
+    ['table', { cols: 2, rows: 1 }],
+    ['codeBlock', { language: 'text' }],
+    ['heading1', undefined],
+    ['ul', undefined],
+    ['task', undefined],
+    ['hr', undefined],
+    ['bold', undefined],
+  ];
+
+  for (const [id, arg] of cases) {
+    const out = runCommand(id, LINKS_LIKE, { anchor: caret, head: caret }, arg);
+    assert.equal(out.blocked, 'front-matter', `${id} was not refused inside the front matter`);
+    assert.equal(out.text, LINKS_LIKE, `${id} changed a byte inside the front matter`);
+  }
+
+  const out = runCommand('image', LINKS_LIKE, { anchor: caret, head: caret }, { src: 'example.jpg' });
+  // The body's own `![](keep-me.jpg)` is still there - what must not appear is Markdown inside
+  // the YAML, so the check is the front-matter region, not the whole file.
+  assert.equal(splitDocument(out.text).frontMatterRaw.includes('!['), false, 'no Markdown may reach the YAML');
+  assert.equal(splitDocument(out.text).hasFrontMatter, true, 'the document must still parse');
+});
+
+test('a selection that reaches into the front matter from the body is refused too', () => {
+  const from = LINKS_LIKE.indexOf('menu:');
+  const to = LINKS_LIKE.indexOf('正文');
+  const out = runCommand('bold', LINKS_LIKE, { anchor: from, head: to + 2 });
+  assert.equal(out.blocked, 'front-matter');
+  assert.equal(out.text, LINKS_LIKE);
+});
+
+test('the body still gets Markdown: same helper, body caret', () => {
+  const caret = paragraphRange(LINKS_LIKE, '正文里的图片').from;
+  const out = runCommand('image', LINKS_LIKE, { anchor: caret, head: caret }, { src: 'example.jpg', alt: '' });
+  assert.equal(out.blocked, undefined, 'the body is not the front matter');
+  assert.equal(out.text.includes('![](example.jpg)'), true);
+  // The front matter is still exactly what it was, and the body's own image stayed put.
+  assert.equal(splitDocument(out.text).frontMatterRaw, splitDocument(LINKS_LIKE).frontMatterRaw);
+  assert.equal(out.text.includes('![](keep-me.jpg)'), true);
+});
+
+test('the slash menu keeps the typed query when it refuses, and Enter is a plain newline', () => {
+  const typed = LINKS_LIKE.replace('    image: 大号头像.jpg', '    image: 大号头像.jpg /im');
+  const caret = typed.indexOf('/im') + 3;
+  const slash = runSlashCommand('image', typed, { anchor: caret, head: caret }, { src: 'example.jpg' });
+  assert.equal(slash.blocked, 'front-matter');
+  assert.equal(slash.text, typed, 'the refused command must not eat the typed /im');
+
+  // Enter inside a `- title:` line is a newline, not the `- ` of a Markdown list item.
+  assert.equal(continueBlock(LINKS_LIKE, { anchor: caret, head: caret }), null);
 });

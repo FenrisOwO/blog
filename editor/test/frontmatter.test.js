@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { splitDocument, readDocument, saveDocument } from '../src/frontmatter/index.js';
+import { hasUnterminatedFrontMatter, splitDocument, readDocument, saveDocument } from '../src/frontmatter/index.js';
 import { FIXTURE, FIXTURE_CONTENT } from './fixtures/harness.js';
 
 const CONTENT_ROOT = FIXTURE_CONTENT;
@@ -132,4 +132,29 @@ test('editing the body keeps front matter untouched', () => {
   const next = saveDocument(text, {}, `${parts.bodyRaw}\nnew paragraph\n`);
   assert.equal(splitDocument(next).frontMatterRaw, parts.frontMatterRaw);
   assert.match(next, /new paragraph/);
+});
+
+// --- front matter integrity -------------------------------------------------
+//
+// The one shape a save must never produce: an opener with no closer. Hugo reports it as
+// "EOF looking for end YAML front matter delimiter", and this engine's own split then reads the
+// document as having no front matter at all - so the whole page is unreachable to the editor
+// until a human fixes it by hand.
+
+test('an opener with no closer is reported as unterminated front matter', () => {
+  const broken = ['---', 'title: 链接', 'links:', '  - title: QQ-主号', '    image: 大号头像.jpg', ''].join('\n');
+  assert.equal(hasUnterminatedFrontMatter(broken), true);
+  // Which is the same reason the front-matter engine cannot see it: there is no closer to stop at.
+  assert.equal(splitDocument(broken).hasFrontMatter, false);
+
+  const toml = ['+++', 'title = "x"', ''].join('\n');
+  assert.equal(hasUnterminatedFrontMatter(toml), true);
+});
+
+test('a closed document, or one with no delimiter, is not unterminated', () => {
+  assert.equal(hasUnterminatedFrontMatter(['---', 'title: x', '---', '', 'body', ''].join('\n')), false);
+  assert.equal(hasUnterminatedFrontMatter('just a body\n'), false);
+  assert.equal(hasUnterminatedFrontMatter(''), false);
+  // A rule later in a body is not an opener: only the first line can open front matter.
+  assert.equal(hasUnterminatedFrontMatter('body\n\n---\n\nmore\n'), false);
 });

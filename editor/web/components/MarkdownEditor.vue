@@ -34,7 +34,7 @@ const props = defineProps({
   showToolbar: { type: Boolean, default: true },
 });
 
-const emit = defineEmits(['ready', 'change', 'selection', 'dialog', 'command']);
+const emit = defineEmits(['ready', 'change', 'selection', 'dialog', 'command', 'blocked']);
 
 const host = ref(null);
 const wrap = ref(null);
@@ -66,6 +66,10 @@ function applyCommand(id, arg = null) {
   const text = currentText();
   const before = currentSelection();
   const out = runCommand(id, text, before, arg);
+  if (out.blocked) {
+    emit('blocked', out.blocked);
+    return { changed: false, text: out.text, blocked: out.blocked };
+  }
   const change = minimalChange(text, out.text);
   if (!change) {
     // A command that changes nothing (outdent on an unindented line, for instance) still
@@ -123,6 +127,13 @@ function applyDialog(id, arg) {
   if (id === 'link' && !arg.url) return false;
   if (id === 'image' && !arg.src) return false;
   const out = runCommand(id, text, sel, arg);
+  if (out.blocked) {
+    // The dialog said "insert an image"; the front matter got nothing. Say why rather than
+    // closing as if it had worked.
+    emit('blocked', out.blocked);
+    core.focus();
+    return false;
+  }
   const change = minimalChange(text, out.text);
   if (change) core.applyEdit({ ...change, selection: out.selection });
   core.focus();
