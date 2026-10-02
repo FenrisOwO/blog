@@ -40,6 +40,7 @@ import { ChangeSetError } from '../src/relations/changeSet.js';
 import {
   GitCommandError,
   GitNotARepositoryError,
+  GitPushError,
   GitUnknownCommitError,
   GitUnavailableError,
   GitValidationError,
@@ -524,6 +525,13 @@ export function createEditorServer(options = {}) {
       sendJson(res, 409, { error: error.message, stderr: error.stderr });
       return;
     }
+    if (error instanceof GitPushError) {
+      // A push git refused - no remote, no credentials, a branch that moved on, a network that is
+      // not there. Every one of them is a state the user resolves outside the editor, so the
+      // classified reason travels with the 409 and the panel says what to do about it.
+      sendJson(res, 409, { error: error.message, reason: error.reason, stderr: error.stderr, args: error.args });
+      return;
+    }
     if (error instanceof GitCommandError) {
       sendJson(res, 500, { error: error.message, stderr: error.stderr, args: error.args });
       return;
@@ -980,7 +988,9 @@ export function createEditorServer(options = {}) {
     }
 
     // --- Phase 8: git ------------------------------------------------------
-    // Read-only except for one commit, which needs `confirm: true` like every other write.
+    // Read-only except for two writes, each needing `confirm: true` like every other write in the
+    // editor: a commit of the ticked paths, and a push of the current branch to a remote that
+    // already exists. Nothing here fetches, merges, forces or deletes a ref.
     if (pathname === '/api/git/status' && req.method === 'GET') {
       const paths = url.searchParams.getAll('path').filter((value) => value !== '');
       sendJson(res, 200, await gitService.status({ paths: paths.length > 0 ? paths : null }));
@@ -1008,14 +1018,22 @@ export function createEditorServer(options = {}) {
       return;
     }
 
+    // Phase 10: what a push *would* do. Remotes, the tracked branch, and how far ahead or behind
+    // that tracking ref is - all answered from the local repository, because the git service never
+    // fetches. Remote URLs are returned with any `user:password@` removed (see redactCredentials).
+    if (pathname === '/api/git/remote' && req.method === 'GET') {
+      sendJson(res, 200, await gitService.remoteStatus());
+      return;
+    }
+
     if (pathname === '/api/git/commit' && req.method === 'POST') {
       const body = await readJsonBody(req);
       if (body.confirm !== true) {
         sendJson(res, 400, { error: 'explicit confirmation required: send { confirm: true }' });
         return;
       }
-      // The commit is the only write. There is no reset, clean, checkout or force anywhere in
-      // the git service, so this route cannot lose work: it only records what is on disk.
+      // A commit only records what is on disk: there is no reset, clean, checkout or force in the
+      // git service, so this route cannot lose work.
       const result = await gitService.commit({ message: body.message, paths: body.paths });
       sendJson(res, 200, {
         sha: result.sha,
@@ -1024,6 +1042,25 @@ export function createEditorServer(options = {}) {
         repository: result.repository,
         output: result.output,
       });
+      return;
+    }
+
+    // The push - the second write - is two-step like the rest of the editor. Without `confirm` the
+    // answer is the plan (remote, branch, how far ahead, the exact command) and nothing talks to the
+    // network at all; with `confirm: true` the plan's own args run. `push()` and `pushPlan()` share
+    // one derivation, so what the panel showed cannot differ from what ran.
+    //
+    // Only `confirm`, `remote` and `setUpstream` are read. There is deliberately nowhere to put a
+    // credential: the editor never accepts one, so git uses what the machine already has, or fails
+    // with a reason the panel turns into advice.
+    if (pathname === '/api/git/push' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const request = { remote: body.remote ?? null, setUpstream: body.setUpstream ?? null };
+      if (body.confirm !== true) {
+        sendJson(res, 200, { plan: await gitService.pushPlan(request) });
+        return;
+      }
+      sendJson(res, 200, await gitService.push(request));
       return;
     }
 
@@ -1094,7 +1131,9 @@ export function startEditorServer(options = {}) {
         `  watch        : ${config.watchSources ? `on (poll ${config.watchPollMs}ms; native watch is only an accelerator)` : 'off'}`,
       );
       console.log(`  auto build   : on save = ${config.autoBuildOnSave}`);
-      console.log(`  git          : ${config.gitBin} (read + commit of selected paths only; never init/reset/clean)`);
+      console.log(
+        `  git          : ${config.gitBin} (read + commit of ticked paths + push of the current branch; never init/reset/clean/fetch/force)`,
+      );
       resolvePromise(server);
     });
   });

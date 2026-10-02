@@ -92,3 +92,127 @@ export function emptyScopeHint(change, scope) {
   }
   return '这个范围里没有改动——改动可能已经在索引里，或者已经被提交。';
 }
+
+// --- pushing ---------------------------------------------------------------
+//
+// The push box's decisions, kept here for the same reason as the rest of this file: a `.vue` file
+// renders, and anything that can be *wrong* has to be callable from `node --test`.
+
+// The count badges, and only what is actually there. `ahead: null` (the branch tracks nothing yet)
+// has no badge on purpose: "we do not know yet" is not a number.
+export function aheadBehindLabel({ ahead = null, behind = null } = {}) {
+  const parts = [];
+  if (Number.isInteger(ahead) && ahead > 0) parts.push(`↑${ahead}`);
+  if (Number.isInteger(behind) && behind > 0) parts.push(`↓${behind}`);
+  return parts.length > 0 ? parts.join(' ') : null;
+}
+
+// The sentence under the target: what would actually travel, and what would not.
+export function pushSummary({ hasUpstream = false, ahead = null, behind = null, uncommitted = 0 } = {}) {
+  let text;
+  let tone = 'info';
+  if (!hasUpstream) {
+    text = '首次推送：会在远程新建这个分支，并把它设为上游。';
+  } else if (!Number.isInteger(ahead) || !Number.isInteger(behind)) {
+    text = '无法确定与远程的差距：本地跟踪引用不可用。';
+    tone = 'warn';
+  } else if (ahead === 0 && behind === 0) {
+    text = '没有未推送的提交。';
+    tone = 'muted';
+  } else if (ahead === 0) {
+    text = `本地没有新提交，但落后远程 ${behind} 个提交——推送会被拒绝。`;
+    tone = 'warn';
+  } else if (behind > 0) {
+    text = `${ahead} 个提交等待推送；本地还落后远程 ${behind} 个提交，推送可能被拒绝。`;
+    tone = 'warn';
+  } else {
+    text = `${ahead} 个提交等待推送。`;
+  }
+  // A push only sends commits, so uncommitted work is worth naming here - it is the difference
+  // between "I pushed" and "my latest edit is on the site".
+  const note = uncommitted > 0 ? `未提交的 ${uncommitted} 个文件不会随这次推送出去。` : null;
+  return { text, note, tone };
+}
+
+// `origin/main ← phase-8-modern-editor`: the remote branch a push writes, and the local one it comes
+// from. Without an upstream the destination is the local branch name, created by this push.
+export function pushTargetLabel({ remote = null, branch = null, setUpstream = false } = {}) {
+  if (!remote || !branch) return null;
+  return setUpstream ? `${remote}/${branch}（本次新建，并设为上游）` : `${remote}/${branch}`;
+}
+
+// Why the push button is disabled, in the order the user would fix them. `null` means pushable.
+export function pushBlockedReason({ busy = false, state = null } = {}) {
+  if (busy) return '正在推送…';
+  if (!state) return '正在读取远程信息…';
+  if (state.detached === true || !state.branch) return '当前是游离 HEAD，没有可推送的分支';
+  if (!Array.isArray(state.remotes) || state.remotes.length === 0) return '这个仓库还没有配置远程仓库（remote）';
+  if (!state.remote) return '有多个远程仓库，请先在下面选一个';
+  return null;
+}
+
+// The button is two-step: publishing to a remote is the one action here that leaves the machine, so
+// the first click shows what would happen and asks.
+export function pushButtonLabel({ stage = 'idle', remote = null, ahead = null } = {}) {
+  const target = remote ?? '远程';
+  if (stage === 'confirm') return `确认推送到 ${target}`;
+  if (Number.isInteger(ahead) && ahead > 0) return `推送到 ${target}（${ahead} 个提交）`;
+  return `推送到 ${target}`;
+}
+
+// What just happened, said plainly - "already there" and "we sent something" are different outcomes.
+export function pushResultLabel({ pushed = false, upToDate = false, remote = '', branch = '', setUpstream = false } = {}) {
+  if (upToDate) return `远程已经是最新的：${remote}/${branch}`;
+  if (pushed) return `已推送 ${branch} → ${remote}/${branch}${setUpstream ? '（已设为上游）' : ''}`;
+  return `远程没有需要更新的 ref：${remote}/${branch}`;
+}
+
+// Why a push failed, in words, plus the command that fixes it outside the editor. The service
+// classifies (`reason`); the wording is here. `null` reason (a validation error) means the message
+// the server sent is already precise, so the panel shows it as it is.
+const PUSH_FAILURE_NOTICES = Object.freeze({
+  'no-remote': {
+    title: '这个仓库还没有远程仓库',
+    text: '先在终端里把远程加上，回来点一次「刷新」就能推送。',
+    command: 'git remote add origin <仓库地址>',
+  },
+  'detached-head': {
+    title: '当前是游离 HEAD',
+    text: '没有分支可以推送。先切回一个分支（编辑器不会替你 checkout）。',
+    command: 'git switch <分支名>',
+  },
+  'no-credentials': {
+    title: '这台机器没有访问远程仓库的凭据',
+    text: '编辑器不会保存、也不会接受任何凭据（没有 token 输入框，是故意的）。在终端里登录一次，git 就会用系统里已有的凭据助手；登录前它会立刻失败，而不是卡在密码提示上。',
+    command: 'gh auth login && gh auth setup-git',
+  },
+  'rejected-non-fast-forward': {
+    title: '远程有你本地没有的提交，推送被拒绝',
+    text: '这次推送什么都没改。编辑器不会替你 fetch、merge 或 force——那几条路都可能覆盖别人的提交。在终端里先把远程的提交取回来合好，再回来推送。',
+    command: 'git pull --rebase',
+  },
+  'rejected-by-remote': {
+    title: '远程拒绝了这次推送',
+    text: '常见原因：分支受保护、服务端钩子拒绝、或者没有被授予写权限。git 的原文在下面。',
+    command: null,
+  },
+  'remote-unreadable': {
+    title: '远程仓库读不到',
+    text: '仓库不存在、地址不对，或者这台机器没有它的访问凭据。先确认地址与权限。',
+    command: 'gh auth status',
+  },
+  network: {
+    title: '连不上远程仓库',
+    text: '网络或 DNS 的问题，不是仓库的问题。git 的原文在下面。',
+    command: null,
+  },
+  unknown: {
+    title: '推送失败',
+    text: 'git 给出的原因在下面原文里；编辑器没有猜，也没有改任何东西。',
+    command: null,
+  },
+});
+
+export function pushFailureNotice(reason) {
+  return PUSH_FAILURE_NOTICES[reason] ?? PUSH_FAILURE_NOTICES.unknown;
+}

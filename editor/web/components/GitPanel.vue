@@ -1,21 +1,29 @@
 <script setup>
 // Git, as a review panel.
 //
-// The editor writes files; this panel shows what that did to the repository, and offers exactly
-// one write: committing the paths the user ticks. There is no reset, no clean, no checkout, no
-// force and no amend - the server's git service does not implement them - so nothing here can
-// lose an article. An uninitialised repository is shown as a state, not as an error, and the
-// editor never runs `git init`.
+// The editor writes files; this panel shows what that did to the repository, and offers exactly two
+// writes, each one confirmed separately: committing the paths the user ticks, and pushing the
+// current branch to a remote that already exists. There is no reset, no clean, no checkout, no
+// force, no amend and no fetch - the server's git service does not implement them - so nothing here
+// can lose an article or rewrite anyone's history. An uninitialised repository is shown as a state,
+// not as an error, and the editor never runs `git init`.
 
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 
 import {
   KIND_LETTER,
+  aheadBehindLabel,
   changeCountsLabel,
   commitBlockedReason as blockedReason,
   diffScopeLabel,
   emptyScopeHint,
   preferredScope,
+  pushBlockedReason as blockedPushReason,
+  pushButtonLabel,
+  pushFailureNotice,
+  pushResultLabel,
+  pushSummary as pushSummaryText,
+  pushTargetLabel,
   repositoryNotice,
   scopeSwitchAvailable,
   visibleChanges as filterChanges,
@@ -52,6 +60,17 @@ const diffScope = ref('unstaged');
 const commitText = ref('');
 const commitNarrowed = ref(null);
 const messageBox = ref(null);
+// Phase 10: the push. `pushStage` is the UI half of the two-step rule - the first click shows what
+// would be published (the plan the server derived without touching the network), the second one
+// runs it. `pushRemote` is only meaningful when the repository has more than one remote.
+const pushState = ref(null);
+const pushPlan = ref(null);
+const pushResult = ref(null);
+const pushError = ref(null);
+const pushStage = ref('idle');
+const pushRemote = ref(null);
+const pushLoading = ref(false);
+const pushing = ref(false);
 
 const changes = computed(() => status.value?.changes ?? []);
 
@@ -84,12 +103,56 @@ const showScopeSwitch = computed(() => scopeSwitchAvailable(diff.value));
 
 const scopeEmptyHint = computed(() => emptyScopeHint(selectedChange.value, diffScope.value));
 
+// --- the push box's computed state -----------------------------------------
+const pushBlockedReason = computed(() => blockedPushReason({ busy: pushing.value, state: pushState.value }));
+
+const selectedRemote = computed(() => pushRemote.value ?? pushState.value?.remote ?? null);
+
+const pushTarget = computed(() =>
+  pushTargetLabel({
+    remote: selectedRemote.value,
+    branch: pushState.value?.branch ?? null,
+    setUpstream: pushState.value?.setUpstream === true,
+  }),
+);
+
+const pushBadge = computed(() => aheadBehindLabel(pushState.value ?? {}));
+
+const pushSummary = computed(() =>
+  pushSummaryText({
+    hasUpstream: pushState.value?.hasUpstream === true,
+    ahead: pushState.value?.ahead ?? null,
+    behind: pushState.value?.behind ?? null,
+    uncommitted: changes.value.length,
+  }),
+);
+
+const pushButtonText = computed(() =>
+  pushButtonLabel({ stage: pushStage.value, remote: selectedRemote.value, ahead: pushState.value?.ahead ?? null }),
+);
+
+// The remote's own URL, credential-free - the whole point of showing it is that the user can check
+// which repository they are about to publish to.
+const remoteUrl = computed(() => {
+  const remotes = pushState.value?.remotes ?? [];
+  return remotes.find((entry) => entry.name === selectedRemote.value)?.url ?? null;
+});
+
+const canPush = computed(() => pushStage.value === 'idle' && pushBlockedReason.value === null);
+
+const pushFailure = computed(() => (pushError.value?.notice ? pushError.value.notice : null));
+
 async function api(path, options) {
   const response = await fetch(path, options);
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const suffix = body.stderr ? `：${String(body.stderr).split('\n').slice(-3).join(' ')}` : '';
-    throw new Error(`${body.error ?? `HTTP ${response.status}`}${suffix}`);
+    const failure = new Error(`${body.error ?? `HTTP ${response.status}`}${suffix}`);
+    // The push box needs the classified `reason` and git's own output, not just one sentence: a
+    // refusal the user can fix is a different thing from a bug.
+    failure.body = body;
+    failure.status = response.status;
+    throw failure;
   }
   return body;
 }
@@ -104,11 +167,36 @@ async function loadStatus() {
       const present = new Set(changes.value.map((change) => change.path));
       checked.value = new Set([...checked.value].filter((path) => present.has(path)));
       if (selected.value && !present.has(selected.value)) selected.value = null;
+      await loadPush();
+    } else {
+      pushState.value = null;
+      pushResult.value = null;
+      pushError.value = null;
+      pushStage.value = 'idle';
     }
   } catch (cause) {
     error.value = cause.message ?? String(cause);
   } finally {
     loading.value = false;
+  }
+}
+
+// The push box reads its own endpoint, and a failure here must not blank the change list: the panel
+// can still show what changed even when it cannot say what a push would do.
+async function loadPush() {
+  pushLoading.value = true;
+  try {
+    pushState.value = await api('/api/git/remote');
+    const names = (pushState.value.remotes ?? []).map((entry) => entry.name);
+    if (pushRemote.value === null || !names.includes(pushRemote.value)) {
+      pushRemote.value = pushState.value.remote ?? names[0] ?? null;
+    }
+    pushError.value = null;
+  } catch (cause) {
+    pushState.value = null;
+    pushError.value = { message: cause.message ?? String(cause), reason: null, stderr: '', notice: null };
+  } finally {
+    pushLoading.value = false;
   }
 }
 
@@ -221,6 +309,75 @@ async function submitCommit() {
   }
 }
 
+// --- the push's three steps: ask, run, report -----------------------------
+function describePushFailure(cause) {
+  const body = cause?.body ?? null;
+  return {
+    message: cause?.message ?? String(cause),
+    reason: body?.reason ?? null,
+    stderr: body?.stderr ?? '',
+    notice: body?.reason ? pushFailureNotice(body.reason) : null,
+  };
+}
+
+// Step one: ask. This calls the endpoint *without* `confirm`, so the server answers with the plan
+// and runs no git command that writes - and nothing at all that talks to the network.
+async function openPushConfirm() {
+  if (!canPush.value) return;
+  pushError.value = null;
+  pushResult.value = null;
+  try {
+    const body = await api('/api/git/push', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ remote: selectedRemote.value, setUpstream: null }),
+    });
+    pushPlan.value = body.plan ?? null;
+    pushStage.value = 'confirm';
+  } catch (cause) {
+    pushError.value = describePushFailure(cause);
+  }
+}
+
+function cancelPush() {
+  pushStage.value = 'idle';
+  pushPlan.value = null;
+}
+
+// Step two: run it. `setUpstream` comes from the plan the user just read, so the recorded upstream
+// is the same decision that was shown.
+async function submitPush() {
+  if (pushing.value) return;
+  pushing.value = true;
+  pushError.value = null;
+  try {
+    const result = await api('/api/git/push', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        remote: selectedRemote.value,
+        setUpstream: pushPlan.value?.setUpstream ?? null,
+        confirm: true,
+      }),
+    });
+    pushResult.value = result;
+    pushError.value = null;
+    pushStage.value = 'idle';
+    pushPlan.value = null;
+    props.notify?.('success', '已推送', { text: pushResultLabel(result) });
+    // The ahead count and the upstream both moved: the whole panel is re-read from the repository.
+    await loadStatus();
+  } catch (cause) {
+    const failure = describePushFailure(cause);
+    pushError.value = failure;
+    pushStage.value = 'idle';
+    pushPlan.value = null;
+    props.notify?.('error', '推送失败', { text: failure.notice ? failure.notice.title : failure.message });
+  } finally {
+    pushing.value = false;
+  }
+}
+
 function diffLines(text) {
   return String(text ?? '')
     .split('\n')
@@ -255,6 +412,9 @@ watch(
       <span v-if="status?.repository" class="badge accent">{{ status.branch ?? '(detached)' }}</span>
       <span v-if="status?.repository?.head" class="badge mono">{{ status.repository.head }}</span>
       <span v-if="countsLabel" class="badge">{{ countsLabel }}</span>
+      <!-- The unpushed count belongs in the header, not only in the box: it is the number that
+           decides whether there is anything to publish at all. -->
+      <span v-if="pushBadge" class="badge info" :title="`本地领先远程：${pushBadge}`">{{ pushBadge }}</span>
       <span class="spacer"></span>
       <div class="segmented">
         <button type="button" :aria-pressed="tab === 'changes'" @click="tab = 'changes'">变更 {{ changes.length }}</button>
@@ -340,7 +500,7 @@ watch(
                   <span>提交 {{ selectedPaths.length }} 个文件</span>
                 </button>
                 <span v-if="commitBlockedReason" class="hint">{{ commitBlockedReason }}</span>
-                <span v-else class="hint">不会执行 pre-commit 钩子，也不会 push。</span>
+                <span v-else class="hint">不会执行 pre-commit 钩子；推送是下面独立的一步。</span>
               </div>
             </div>
           </template>
@@ -365,6 +525,80 @@ watch(
             </button>
           </div>
         </template>
+        <!-- The push, in its own box below the list: it stays visible on both tabs and with a clean
+             worktree, because "nothing to commit" and "nothing to push" are different sentences - and
+             the second one is the one that publishes. -->
+        <div class="commit-box push-box">
+          <div class="commit-head">
+            <strong class="push-title"><span class="icon sm" aria-hidden="true">⬆️</span>推送</strong>
+            <span v-if="pushBadge" class="badge info">{{ pushBadge }}</span>
+            <span class="spacer"></span>
+            <button type="button" class="btn mini" :disabled="pushLoading || pushing" @click="loadPush">
+              <span class="icon sm" aria-hidden="true">↻</span>远程状态
+            </button>
+          </div>
+
+          <p v-if="pushLoading" class="hint"><span class="spinner"></span>正在读取远程信息…</p>
+
+          <template v-else-if="pushState">
+            <p class="hint">
+              <code>{{ pushTarget ?? '（没有可用的远程仓库）' }}</code>
+              <span v-if="pushState.branch">← {{ pushState.branch }}</span>
+              <span v-if="pushState.trackingRefStale">（本地跟踪引用，可能已过期）</span>
+            </p>
+            <p v-if="remoteUrl" class="hint"><code>{{ remoteUrl }}</code></p>
+            <p class="hint">
+              <span v-if="pushSummary.tone === 'warn'" class="badge warn">注意</span>
+              {{ pushSummary.text }}
+            </p>
+            <p v-if="pushSummary.note" class="hint">{{ pushSummary.note }}</p>
+
+            <label v-if="pushState.remotes.length > 1" class="push-remote">
+              <span class="hint">远程仓库</span>
+              <select v-model="pushRemote" :disabled="pushing">
+                <option v-for="entry in pushState.remotes" :key="entry.name" :value="entry.name">{{ entry.name }}</option>
+              </select>
+            </label>
+
+            <div v-if="pushStage === 'idle'" class="commit-actions">
+              <button type="button" class="btn primary sm" :disabled="!canPush" @click="openPushConfirm">
+                <span class="icon sm" aria-hidden="true">⬆️</span>
+                <span>{{ pushButtonText }}</span>
+              </button>
+              <span v-if="pushBlockedReason" class="hint">{{ pushBlockedReason }}</span>
+              <span v-else class="hint">只推送当前分支；不会 fetch、不会 force。</span>
+            </div>
+
+            <template v-else>
+              <p class="hint">将要运行 <code>{{ pushPlan?.command }}</code></p>
+              <div class="commit-actions">
+                <button type="button" class="btn primary sm" :disabled="pushing" @click="submitPush">
+                  <span v-if="pushing" class="spinner"></span>
+                  <span v-else class="icon sm" aria-hidden="true">⬆️</span>
+                  <span>确认推送到 {{ pushPlan?.remote?.name ?? selectedRemote ?? '远程' }}</span>
+                </button>
+                <button type="button" class="btn sm" :disabled="pushing" @click="cancelPush">取消</button>
+              </div>
+            </template>
+
+            <div v-if="pushError" class="push-failure">
+              <p class="error-line">
+                <strong>{{ pushFailure ? pushFailure.title : '推送没有执行' }}</strong>
+                <span>{{ pushFailure ? pushFailure.text : pushError.message }}</span>
+              </p>
+              <p v-if="pushFailure?.command" class="hint"><code>{{ pushFailure.command }}</code></p>
+              <p v-if="pushFailure" class="hint">{{ pushError.message }}</p>
+              <pre v-if="pushError.stderr" class="push-stderr">{{ pushError.stderr }}</pre>
+            </div>
+            <p v-else-if="pushResult" class="hint">{{ pushResultLabel(pushResult) }}</p>
+          </template>
+
+          <p v-else class="state error">
+            <strong>无法读取远程信息</strong>
+            <span>{{ pushError?.message ?? '这个仓库没有可用的远程状态。' }}</span>
+            <span class="state-actions"><button type="button" class="btn" @click="loadPush">重试</button></span>
+          </p>
+        </div>
       </div>
 
       <aside class="git-side">
@@ -566,5 +800,40 @@ textarea {
   margin: 0;
   max-height: none;
   flex: 1 1 auto;
+}
+
+/* The push box borrows .commit-box for its frame; only the rows inside it are its own. A push is a
+   separate decision from a commit, so it gets its own box instead of a second button in that one. */
+.push-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.push-remote {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.push-failure {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+/* git's own words for why a push failed, kept verbatim and scrollable: the classification above it
+   is an interpretation, and the original is what settles a disagreement with it. */
+.push-stderr {
+  margin: 0;
+  max-height: 160px;
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
 }
 </style>

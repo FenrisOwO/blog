@@ -1,16 +1,26 @@
 // Git, as a service - not as a second editor.
 //
 // The editor's own write path never goes through git: a save writes the file, and git notices
-// afterwards. This module reads the repository (status, diff, log, show) and performs exactly
-// one write, a commit of the paths the user ticked. Every call goes through `execFile` with an
-// argument array - never a shell string - so a path containing spaces, quotes, Unicode or a
-// `;` is data, not syntax.
+// afterwards. This module reads the repository (status, diff, log, show, remote) and performs
+// exactly two writes: a commit of the paths the user ticked, and a push of the current branch to
+// a remote that already exists. Every call goes through `execFile` with an argument array - never
+// a shell string - so a path containing spaces, quotes, Unicode or a `;` is data, not syntax.
 //
 // Deliberate limits, because this is a site editor's git panel and not a git client:
 //
-//   * no `reset`, `clean`, `checkout`, `restore`, `stash`, `push`, `fetch`, `--amend`, `--force`;
-//     the allow-list below is the whole surface and anything else throws;
-//   * no hooks (`--no-verify`): a commit must not become a way to run arbitrary scripts;
+//   * no `reset`, `clean`, `checkout`, `restore`, `stash`, `fetch`, `pull`, `merge`, `rebase`,
+//     `gc`, `init`, `--amend`, `--force`, `--delete`; the allow-list below is the whole surface
+//     and anything else throws;
+//   * a push never fetches and never forces. A branch that moved on the remote is a *reported*
+//     refusal, not something this service resolves by rewriting anything - so no code path here
+//     can discard work, local or remote;
+//   * **the editor never accepts a credential.** There is no token parameter anywhere in this
+//     file: `GIT_TERMINAL_PROMPT=0` makes git use whatever the machine already has (a credential
+//     helper, an SSH agent) or fail at once with a message the user can act on. Everything git
+//     prints is scrubbed of `scheme://user:password@` before it leaves this module
+//     (`redactCredentials`), because the panel renders it in a browser;
+//   * no hooks (`--no-verify`) on either write: a commit or a push must not become a way to run
+//     arbitrary scripts;
 //   * `GIT_OPTIONAL_LOCKS=0` and `GIT_TERMINAL_PROMPT=0`: reading status must not take a lock,
 //     and nothing may block on a credential prompt;
 //   * an uninitialised repository is reported as `repository: null`, never `git init`-ed.
@@ -41,15 +51,31 @@ export class GitCommandError extends GitError {
 // looking at a list that has since been rewritten (a rebase outside the editor, a fetch).
 export class GitUnknownCommitError extends GitCommandError {}
 
-// Everything this service is allowed to ask git to do: reading, plus one commit.
+// A push git refused. Not a crash either: "no remote is configured", "this machine has no
+// credentials" and "the remote has commits you do not have" are states the user resolves outside
+// the editor, so a classified `reason` travels with the error. The wording the user reads lives in
+// the UI (web/gitView.js) - the same split `classifyRepositoryFailure` already uses.
+export class GitPushError extends GitCommandError {
+  constructor(message, details = {}) {
+    super(message, details);
+    this.reason = details.reason ?? 'unknown';
+  }
+}
+
+// Everything this service is allowed to ask git to do: reading, plus exactly two writes - a commit
+// and a push. `remote` and `rev-list` are here for the push panel: which remotes exist, what the
+// branch tracks, and how far ahead or behind that tracking ref is.
 export const ALLOWED_SUBCOMMANDS = Object.freeze([
   'rev-parse',
+  'rev-list',
   'status',
   'diff',
   'log',
   'show',
+  'remote',
   'add',
   'commit',
+  'push',
   'branch',
   'config',
   'symbolic-ref',
@@ -156,10 +182,101 @@ export function classifyRepositoryFailure(reason) {
   return { code: 'unknown', directory: null };
 }
 
+// A remote URL can carry a credential, and this service returns remote URLs to a browser. Git
+// prints `https://user:token@host/path` for an authenticated remote, so every string that leaves
+// this module through a push path goes through here first.
+//
+// The whole userinfo is dropped, not just the password: `https://<token>@host` (a token used as
+// the username) is common on GitHub, and keeping the username in an `git@host:path` ssh remote
+// would be the only thing left that says who authenticates. The ssh form carries no secret and is
+// left alone on purpose - rewriting it would mangle ordinary text this also runs over.
+export function redactCredentials(text) {
+  return String(text ?? '').replace(/([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)[^/\s@]+@/g, '$1');
+}
+
+// Why a push failed, in git's own words, classified in one place so the UI can give advice that
+// matches the cause. Order matters: a rejection is checked before the messages that accompany it
+// ("remote: ... Could not read from remote repository").
+export function classifyPushFailure(text) {
+  const output = String(text ?? '');
+  if (/\[rejected\][^\n]*non-fast-forward|non-fast-forward|fetch first|Updates were rejected/i.test(output)) {
+    return 'rejected-non-fast-forward';
+  }
+  if (/protected branch|pre-receive hook declined|\[remote rejected\]|remote rejected|cannot lock ref/i.test(output)) {
+    return 'rejected-by-remote';
+  }
+  if (
+    /could not read Username|could not read Password|Authentication failed|Permission denied \(publickey\)|terminal prompts disabled|fatal: Authentication/i.test(
+      output,
+    )
+  ) {
+    return 'no-credentials';
+  }
+  // Checked before the "Could not read from remote repository" wording below, because git adds that
+  // line to a connection failure too - and "the network is down" and "the repo is not there" need
+  // different advice.
+  if (
+    /Could not resolve host|unable to access|Failed to connect|Connection (timed out|refused|reset)|Network is unreachable|Temporary failure in name resolution|Operation timed out/i.test(
+      output,
+    )
+  ) {
+    return 'network';
+  }
+  // GitHub answers "Repository not found" both for a private repository this machine cannot read
+  // and for a URL that points nowhere; git adds "Could not read from remote repository" to both.
+  if (
+    /Repository not found|Could not read from remote repository|does not appear to be a git repository|correct access rights/i.test(
+      output,
+    )
+  ) {
+    return 'remote-unreadable';
+  }
+  if (/no configured push destination|No such remote|no remote/i.test(output)) return 'no-remote';
+  return 'unknown';
+}
+
+// `git rev-parse --abbrev-ref --symbolic-full-name @{upstream}` answers `origin/main`. A branch name
+// may itself contain a slash, so only the first segment is the remote. An empty answer (or the
+// literal query back) means the branch tracks nothing yet.
+export function parseUpstream(fullName) {
+  const text = String(fullName ?? '').trim();
+  if (text === '' || text === '@{upstream}') return null;
+  const slash = text.indexOf('/');
+  if (slash <= 0 || slash === text.length - 1) return null;
+  return { remote: text.slice(0, slash), branch: text.slice(slash + 1), full: text };
+}
+
+// `git push --porcelain` prints one line per ref - `<flag>\t<from>:<to>\t<summary>`, then `Done`.
+// The flag is what says whether anything moved: `=` is up to date, `!` was rejected, `*` is a new
+// branch. Parsing this (rather than trusting the exit code alone) is what lets the panel tell
+// "everything is already there" apart from "the remote refused this ref".
+export function parsePushPorcelain(output) {
+  const result = { refs: [], upToDate: false, rejected: false, pushed: false, target: null };
+  for (const raw of String(output ?? '').split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (line.startsWith('To ')) {
+      result.target = redactCredentials(line.slice(3).trim());
+      continue;
+    }
+    const match = /^([ =+*!-])\t([^\t]+)\t(.*)$/.exec(line);
+    if (!match) continue;
+    const [, flag, refs, summary] = match;
+    const [from, to] = refs.split(':');
+    result.refs.push({ flag, from, to, summary });
+    if (flag === '=') result.upToDate = true;
+    else if (flag === '!') result.rejected = true;
+    else result.pushed = true;
+  }
+  return result;
+}
+
 export function createGitService({
   siteRoot,
   gitBin = 'git',
   timeoutMs = 15_000,
+  // A push talks to another machine: it gets its own budget, and it is the only call here that is
+  // allowed to take longer than the local reads.
+  pushTimeoutMs = 120_000,
   maxBuffer = 16 * 1024 * 1024,
   cacheMs = 5_000,
   runner = null,
@@ -169,7 +286,7 @@ export function createGitService({
   let cached = null;
   let cachedAt = 0;
 
-  function run(args, { cwd = root, allowFailure = false } = {}) {
+  function run(args, { cwd = root, allowFailure = false, timeoutMs: callTimeoutMs = timeoutMs } = {}) {
     const subcommand = args[0];
     if (!ALLOWED_SUBCOMMANDS.includes(subcommand)) {
       return Promise.reject(new GitValidationError(`git ${subcommand} is not allowed by the git service`));
@@ -182,7 +299,7 @@ export function createGitService({
         ['--no-optional-locks', ...args],
         {
           cwd,
-          timeout: timeoutMs,
+          timeout: callTimeoutMs,
           maxBuffer,
           windowsHide: true,
           encoding: 'utf8',
@@ -268,8 +385,8 @@ export function createGitService({
     return cached;
   }
 
-  async function requireRepository() {
-    const { repository } = await detectRepository();
+  async function requireRepository({ force = false } = {}) {
+    const { repository } = await detectRepository({ force });
     if (!repository) {
       throw new GitNotARepositoryError('this site is not a git repository (the editor will not run git init)');
     }
@@ -526,5 +643,169 @@ export function createGitService({
     };
   }
 
-  return { siteRoot: root, detectRepository, status, diff, log, show, commit, run };
+  // What a push would do, answered without touching the network: which remotes exist, what the
+  // current branch tracks, and how far ahead or behind that tracking ref is.
+  //
+  // The tracking ref is only as fresh as the last fetch, and this service deliberately never
+  // fetches - so these numbers describe what the *local* repository believes. A branch with no
+  // upstream reports `ahead: null` rather than a made-up number, because nothing here knows what is
+  // on the other side yet.
+  async function remoteStatus() {
+    // Read fresh rather than cached: a push publishes a named branch, so the branch and the HEAD
+    // state must be what they are *now*, not what a status poll saw a few seconds ago - the user may
+    // have switched branch in a terminal, and pushing the branch they left would be a surprise.
+    const repository = await requireRepository({ force: true });
+
+    const listed = await run(['remote'], { allowFailure: true });
+    const names = listed.stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((name) => name !== '');
+    const remotes = [];
+    for (const name of names) {
+      const url = await run(['remote', 'get-url', name], { allowFailure: true });
+      remotes.push({ name, url: url.code === 0 ? redactCredentials(url.stdout.trim()) : null });
+    }
+
+    const upstreamProbe = await run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'], {
+      allowFailure: true,
+    });
+    const upstream = upstreamProbe.code === 0 ? parseUpstream(upstreamProbe.stdout) : null;
+
+    let ahead = null;
+    let behind = null;
+    if (upstream) {
+      // `<behind>\t<ahead>`: the left side is what the upstream has and this branch does not.
+      const counts = await run(['rev-list', '--left-right', '--count', `${upstream.full}...HEAD`], {
+        allowFailure: true,
+      });
+      if (counts.code === 0) {
+        const [behindText, aheadText] = counts.stdout.trim().split(/\s+/);
+        const parsedBehind = Number.parseInt(behindText, 10);
+        const parsedAhead = Number.parseInt(aheadText, 10);
+        if (Number.isInteger(parsedBehind) && Number.isInteger(parsedAhead)) {
+          behind = parsedBehind;
+          ahead = parsedAhead;
+        }
+      }
+    }
+
+    const available = remotes.map((entry) => entry.name);
+    // The remote a push would go to: the one the branch already tracks, else `origin`, else the only
+    // one there is. Several remotes and none of them `origin` is not a guess this service gets to
+    // make - the panel asks which one, and `push({remote})` answers.
+    const remote =
+      upstream && available.includes(upstream.remote)
+        ? upstream.remote
+        : available.includes('origin')
+          ? 'origin'
+          : available.length === 1
+            ? available[0]
+            : null;
+
+    return {
+      repository,
+      branch: repository.branch ?? null,
+      detached: repository.detached === true,
+      remotes,
+      remote,
+      upstream,
+      hasUpstream: upstream !== null,
+      // A first push creates the remote branch and records it as this branch's upstream, which is a
+      // local config write (`branch.<name>.remote` / `.merge`). The plan says so before it happens.
+      setUpstream: upstream === null,
+      ahead,
+      behind,
+    };
+  }
+
+  // The push - the second and last write in this file.
+  //
+  // Two rules define it: it pushes **the current branch** to a remote that already exists (the name
+  // is matched against `git remote`, so nothing shaped like a flag can reach the command line), and
+  // it never fetches and never forces. A branch that moved on the remote comes back as a classified
+  // refusal for the user to resolve in a terminal - there is no path here that rewrites history or
+  // discards anyone's work.
+  //
+  // `pushPlan` is the same decision without the network: remote, branch, whether the upstream gets
+  // recorded, and the exact command. The panel shows it before asking, and `push` below runs the
+  // plan's own args - so what the user was shown and what runs cannot drift apart.
+  async function pushPlan({ remote = null, setUpstream = null } = {}) {
+    const state = await remoteStatus();
+    const { repository } = state;
+
+    if (state.detached || !state.branch) {
+      throw new GitPushError('a detached HEAD has no branch to push', { reason: 'detached-head', args: ['push'] });
+    }
+    if (state.remotes.length === 0) {
+      throw new GitPushError('this repository has no remote configured', { reason: 'no-remote', args: ['push'] });
+    }
+    const wanted = remote ?? state.remote;
+    const target = state.remotes.find((entry) => entry.name === wanted) ?? null;
+    if (!target) {
+      const known = state.remotes.map((entry) => entry.name).join(', ');
+      throw new GitValidationError(`unknown remote: ${wanted ?? '(none)'} (known remotes: ${known})`);
+    }
+
+    const branch = state.branch;
+    const withUpstream = setUpstream === null ? !state.hasUpstream : setUpstream === true;
+    const args = ['push', '--porcelain', '--no-verify'];
+    if (withUpstream) args.push('--set-upstream');
+    args.push(target.name, branch);
+
+    return {
+      repository,
+      branch,
+      remote: target,
+      // What the local repository believes. `ahead` is null until the branch tracks something,
+      // because nothing here fetches and a first push has no known other side.
+      ahead: state.ahead,
+      behind: state.behind,
+      upstream: state.upstream,
+      setUpstream: withUpstream,
+      remotes: state.remotes,
+      // Reading the tracking ref is not fetching it: the panel says so rather than implying the
+      // remote was just contacted.
+      trackingRefStale: state.hasUpstream,
+      args,
+      command: ['git', ...args].join(' '),
+    };
+  }
+
+  async function push({ remote = null, setUpstream = null } = {}) {
+    const plan = await pushPlan({ remote, setUpstream });
+
+    const result = await run(plan.args, { allowFailure: true, timeoutMs: pushTimeoutMs });
+    const output = redactCredentials(`${result.stdout}\n${result.stderr}`.trim());
+    if (result.code !== 0) {
+      throw new GitPushError(`git push ${plan.remote.name} ${plan.branch} failed`, {
+        reason: classifyPushFailure(output),
+        args: plan.args,
+        code: result.code,
+        stderr: output.slice(0, 2000),
+      });
+    }
+
+    const parsed = parsePushPorcelain(result.stdout);
+    // The upstream may be new and the ahead count certainly moved: what was cached about the
+    // repository is stale the moment a push succeeds.
+    cached = null;
+
+    return {
+      repository: plan.repository,
+      remote: plan.remote.name,
+      remoteUrl: plan.remote.url,
+      branch: plan.branch,
+      upstream: { remote: plan.remote.name, branch: plan.branch, full: `${plan.remote.name}/${plan.branch}` },
+      setUpstream: plan.setUpstream,
+      pushed: parsed.pushed,
+      upToDate: parsed.upToDate && !parsed.pushed,
+      rejected: parsed.rejected,
+      target: parsed.target,
+      refs: parsed.refs,
+      output: output.slice(0, 4000),
+    };
+  }
+
+  return { siteRoot: root, detectRepository, status, diff, log, show, commit, remoteStatus, pushPlan, push, run };
 }

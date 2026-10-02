@@ -2,8 +2,9 @@
 //
 // The server under test points at a throwaway repository in the OS temp directory, so nothing
 // here reads or writes the user's project. What is being verified is the contract the UI
-// depends on: status categories, a diff, a history, and one commit that needs `confirm: true`
-// and touches only the paths it was given.
+// depends on: status categories, a diff, a history, one commit that needs `confirm: true` and
+// touches only the paths it was given, and (Phase 10) a push that needs its own `confirm` and goes
+// to a bare repository in the same temp directory - a real remote, no network, no credential.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -46,9 +47,27 @@ function stubBuildService() {
   };
 }
 
+// A bare repository beside the working one: a real remote for the push route, with no network and
+// no credential - and, like every other fixture here, nothing to do with the user's repository.
+function makeBareOrigin() {
+  const dir = mkdtempSync(join(tmpdir(), 'hve-origin-'));
+  git(dir, ['init', '-q', '--bare', '--initial-branch=main']);
+  return dir;
+}
+
+// A second working copy of the same origin, so a test can move the remote's branch behind the
+// editor's back - the case a push has to refuse instead of forcing over.
+function clonePeer(origin) {
+  const dir = mkdtempSync(join(tmpdir(), 'hve-peer-'));
+  git(dir, ['clone', '-q', origin, dir]);
+  git(dir, ['config', 'user.name', 'Someone Else']);
+  git(dir, ['config', 'user.email', 'else@example.test']);
+  return dir;
+}
+
 // The site lives in a subdirectory of the repository, which is the interesting case: git
 // prints repository-relative paths and the API must answer with site-relative ones.
-async function withRepo(run) {
+async function withRepo(run, { withOrigin = false } = {}) {
   const repoRoot = mkdtempSync(join(tmpdir(), 'hve-git-'));
   const root = join(repoRoot, 'site');
   mkdirSync(join(root, 'content', 'post'), { recursive: true });
@@ -58,6 +77,8 @@ async function withRepo(run) {
   git(repoRoot, ['init', '-q', '--initial-branch=main']);
   git(repoRoot, ['config', 'user.name', 'Editor Test']);
   git(repoRoot, ['config', 'user.email', 'editor@example.test']);
+  const origin = withOrigin ? makeBareOrigin() : null;
+  if (origin) git(repoRoot, ['remote', 'add', 'origin', origin]);
 
   const server = createEditorServer({
     siteRoot: root,
@@ -89,10 +110,11 @@ async function withRepo(run) {
   };
 
   try {
-    await run({ base, root, repoRoot, getJson, postJson });
+    await run({ base, root, repoRoot, origin, getJson, postJson });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     rmSync(repoRoot, { recursive: true, force: true });
+    if (origin) rmSync(origin, { recursive: true, force: true });
   }
 }
 
@@ -197,6 +219,11 @@ test('a site that is not a repository reports it instead of failing', async () =
     const log = await fetch(`${base}/api/git/log`);
     assert.equal(log.status, 409);
     assert.match((await log.json()).error, /not a git repository/);
+
+    // The push routes answer with the same state, not with a crash: there is nothing to push from.
+    const remote = await fetch(`${base}/api/git/remote`);
+    assert.equal(remote.status, 409);
+    assert.match((await remote.json()).error, /not a git repository/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     rmSync(root, { recursive: true, force: true });
@@ -259,3 +286,157 @@ test('a history entry is readable as one patch, and news about files outside the
   });
 });
 
+
+// --- Phase 10: the push route ----------------------------------------------
+
+test('the remote route reports what a push would do, and the plan writes nothing', async () => {
+  await withRepo(
+    async ({ root, origin, getJson, postJson }) => {
+      writeFileSync(join(root, 'content', 'post', 'a.md'), '---\ntitle: A\n---\n\nhello again\n');
+      const committed = await postJson('/api/git/commit', {
+        message: 'Add a',
+        paths: ['content/post/a.md'],
+        confirm: true,
+      });
+      assert.equal(committed.status, 200);
+
+      const state = await getJson('/api/git/remote');
+      assert.equal(state.status, 200);
+      assert.deepEqual(state.body.remotes.map((entry) => entry.name), ['origin']);
+      assert.equal(state.body.branch, 'main');
+      assert.equal(state.body.upstream, null, 'nothing is tracked before the first push');
+      assert.equal(state.body.ahead, null, 'the other side is unknown until a push');
+      assert.equal(state.body.setUpstream, true);
+
+      // The plan is the same decision without the network: it names the exact command and pushes
+      // nothing at all - the route answers a plan whenever `confirm` is absent.
+      const planned = await postJson('/api/git/push', {});
+      assert.equal(planned.status, 200);
+      assert.equal(planned.body.plan.remote.name, 'origin');
+      assert.equal(planned.body.plan.branch, 'main');
+      assert.deepEqual(planned.body.plan.args, [
+        'push',
+        '--porcelain',
+        '--no-verify',
+        '--set-upstream',
+        'origin',
+        'main',
+      ]);
+      assert.equal(planned.body.plan.command, 'git push --porcelain --no-verify --set-upstream origin main');
+      assert.equal(git(origin, ['for-each-ref', '--format=%(refname)']), '', 'the plan pushed nothing');
+
+      // Any other field is simply not read: there is deliberately nowhere to put a credential.
+      const withToken = await postJson('/api/git/push', { token: 'ghp_secretvalue', password: 'hunter2' });
+      assert.equal(withToken.status, 200);
+      assert.equal(JSON.stringify(withToken.body).includes('ghp_secretvalue'), false);
+      assert.equal(JSON.stringify(withToken.body).includes('hunter2'), false);
+    },
+    { withOrigin: true },
+  );
+});
+
+test('a confirmed push sends the branch over HTTP, and says what moved', async () => {
+  await withRepo(
+    async ({ root, origin, repoRoot, getJson, postJson }) => {
+      writeFileSync(join(root, 'content', 'post', 'a.md'), '---\ntitle: A\n---\n\nhello again\n');
+      const committed = await postJson('/api/git/commit', {
+        message: 'Add a',
+        paths: ['content/post/a.md'],
+        confirm: true,
+      });
+      assert.equal(committed.status, 200);
+
+      const pushed = await postJson('/api/git/push', { confirm: true });
+      assert.equal(pushed.status, 200);
+      assert.equal(pushed.body.pushed, true);
+      assert.equal(pushed.body.upToDate, false);
+      assert.equal(pushed.body.remote, 'origin');
+      assert.equal(pushed.body.branch, 'main');
+      assert.equal(pushed.body.setUpstream, true);
+      assert.equal(git(origin, ['rev-parse', 'refs/heads/main']), committed.body.sha, 'the commit is on the remote');
+      assert.equal(git(repoRoot, ['rev-parse', 'refs/remotes/origin/main']), committed.body.sha);
+
+      const after = await getJson('/api/git/remote');
+      assert.equal(after.body.upstream.full, 'origin/main');
+      assert.equal(after.body.ahead, 0);
+      assert.equal(after.body.behind, 0);
+      assert.equal(after.body.setUpstream, false);
+
+      // A second push with nothing to send is still 200: "already there" is an outcome, not an error.
+      const again = await postJson('/api/git/push', { confirm: true });
+      assert.equal(again.status, 200);
+      assert.equal(again.body.upToDate, true);
+      assert.equal(again.body.pushed, false);
+    },
+    { withOrigin: true },
+  );
+});
+
+test('a refused push is a 409 with the reason, and nothing is rewritten or fetched', async () => {
+  await withRepo(
+    async ({ root, origin, repoRoot, postJson }) => {
+      writeFileSync(join(root, 'content', 'post', 'a.md'), '---\ntitle: A\n---\n\nfirst\n');
+      await postJson('/api/git/commit', { message: 'first', paths: ['content/post/a.md'], confirm: true });
+      const first = await postJson('/api/git/push', { confirm: true });
+      assert.equal(first.body.pushed, true);
+
+      // Someone else moves the branch on.
+      const peer = clonePeer(origin);
+      try {
+        writeFileSync(join(peer, 'theirs.md'), 'their work\n');
+        git(peer, ['add', '-A']);
+        git(peer, ['commit', '-q', '-m', 'their commit']);
+        git(peer, ['push', '-q', 'origin', 'main']);
+      } finally {
+        rmSync(peer, { recursive: true, force: true });
+      }
+      const remoteHead = git(origin, ['rev-parse', 'refs/heads/main']);
+
+      writeFileSync(join(root, 'content', 'post', 'a.md'), '---\ntitle: A\n---\n\nmine\n');
+      await postJson('/api/git/commit', { message: 'mine', paths: ['content/post/a.md'], confirm: true });
+      const localHead = git(repoRoot, ['rev-parse', 'HEAD']);
+      const trackingBefore = git(repoRoot, ['rev-parse', 'refs/remotes/origin/main']);
+
+      const refused = await postJson('/api/git/push', { confirm: true });
+      assert.equal(refused.status, 409, 'a refusal the user resolves is not a 500');
+      assert.equal(refused.body.reason, 'rejected-non-fast-forward');
+      assert.match(refused.body.stderr, /rejected/i, "git's own words are kept for the panel");
+
+      assert.equal(git(repoRoot, ['rev-parse', 'HEAD']), localHead, 'the local branch moved');
+      assert.equal(git(origin, ['rev-parse', 'refs/heads/main']), remoteHead, 'the remote was rewritten');
+      assert.equal(git(repoRoot, ['rev-parse', 'refs/remotes/origin/main']), trackingBefore, 'something fetched');
+    },
+    { withOrigin: true },
+  );
+});
+
+test('a push with nowhere to go is a 409 that names the state', async () => {
+  await withRepo(async ({ postJson, getJson }) => {
+    const state = await getJson('/api/git/remote');
+    assert.equal(state.status, 200);
+    assert.deepEqual(state.body.remotes, []);
+    assert.equal(state.body.remote, null);
+
+    const planned = await postJson('/api/git/push', {});
+    assert.equal(planned.status, 409);
+    assert.equal(planned.body.reason, 'no-remote');
+
+    const refused = await postJson('/api/git/push', { confirm: true });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.reason, 'no-remote');
+  });
+});
+
+test('a remote that does not exist is a 400, before git is asked to do anything', async () => {
+  await withRepo(
+    async ({ origin, postJson }) => {
+      for (const remote of ['upstream', '--force', '-u']) {
+        const refused = await postJson('/api/git/push', { remote, confirm: true });
+        assert.equal(refused.status, 400, `${remote} must be refused as a bad request`);
+        assert.match(refused.body.error, /unknown remote/);
+      }
+      assert.equal(git(origin, ['for-each-ref', '--format=%(refname)']), '', 'nothing reached the remote');
+    },
+    { withOrigin: true },
+  );
+});

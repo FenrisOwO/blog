@@ -14,7 +14,7 @@ import { join, relative } from 'node:path';
 
 import { createBuildService, defaultBuildPaths } from '../src/build/index.js';
 import { runCommand, runSlashCommand } from '../src/editorCore/markdown.js';
-import { ALLOWED_SUBCOMMANDS, createGitService } from '../src/git/index.js';
+import { ALLOWED_SUBCOMMANDS, createGitService, redactCredentials } from '../src/git/index.js';
 import { readDocument, saveDocument, splitDocument } from '../src/frontmatter/index.js';
 import { createSettingsService } from '../src/settings/settingsService.js';
 import { readThemeInfo } from '../src/settings/themeInfo.js';
@@ -1756,11 +1756,13 @@ console.log('T18 Phase 8：git 服务（状态 / diff / 日志 / 提交）在临
     }
     check(rejected !== null, 'T18 站点之外的路径被拒绝');
 
-    // The allow-list is the safety property: no reset, no clean, no checkout, no force.
-    const forbidden = ['reset', 'clean', 'checkout', 'push', 'rebase', 'gc', 'init'].filter((name) =>
-      ALLOWED_SUBCOMMANDS.includes(name),
+    // The allow-list is the safety property: no reset, no clean, no checkout, no fetch, no force.
+    // `push` is no longer on this list (Phase 10 added it, behind `push()` and its own confirm), but
+    // everything that could rewrite or discard work still is.
+    const forbidden = ['reset', 'clean', 'checkout', 'fetch', 'pull', 'merge', 'rebase', 'gc', 'init'].filter(
+      (name) => ALLOWED_SUBCOMMANDS.includes(name),
     );
-    check(forbidden.length === 0, 'T18 服务不允许 reset / clean / checkout 等破坏性命令', forbidden.join(', '));
+    check(forbidden.length === 0, 'T18 服务不允许 reset / clean / checkout / fetch 等破坏性命令', forbidden.join(', '));
 
     let blocked = null;
     try {
@@ -1859,6 +1861,183 @@ console.log('T19 Phase 9：本地 git 工作流（Status → Diff → Commit →
     rmSync(repoRoot, { recursive: true, force: true });
   }
 }
+
+// T20 - Phase 10: the push, on a throwaway repository with a bare `origin` beside it.
+//
+// A push to GitHub differs from a push to a bare repository in `mkdtemp` in exactly one way: the
+// transport. So this is the honest end-to-end gate - real refs, a real upstream, a real refusal
+// when the remote moved on - and it never touches the user's repository, the network, or a
+// credential. The whole-tree checks below and above still prove the real site came back unchanged.
+console.log('');
+console.log('T20 Phase 10：远程推送（首次 / 上游 / 已是最新 / 被拒绝 / 凭据不落地）在临时仓库 + 裸远程上');
+{
+  const repoRoot = mkdtempSync(join(tmpdir(), 'hve-git10-'));
+  const originRoot = mkdtempSync(join(tmpdir(), 'hve-origin10-'));
+  const siteRoot = join(repoRoot, 'site');
+  mkdirSync(join(siteRoot, 'content', 'post'), { recursive: true });
+
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null' };
+  const git = (cwd, args) => execFileSync('git', args, { cwd, env: gitEnv, encoding: 'utf8' }).trim();
+  const service = createGitService({ siteRoot });
+
+  try {
+    git(originRoot, ['init', '-q', '--bare', '--initial-branch=main']);
+    git(repoRoot, ['init', '-q', '--initial-branch=main']);
+    git(repoRoot, ['config', 'user.name', 'Acceptance']);
+    git(repoRoot, ['config', 'user.email', 'acceptance@example.com']);
+    writeFileSync(join(siteRoot, 'content', 'post', 'article.md'), '# article\n', 'utf8');
+    git(repoRoot, ['add', '-A']);
+    git(repoRoot, ['commit', '-q', '-m', 'T20 起始提交']);
+    git(repoRoot, ['remote', 'add', 'origin', originRoot]);
+
+    // Before the first push: there is a remote, there is no upstream, and the distance to the other
+    // side is unknown rather than zero.
+    const before = await service.remoteStatus();
+    check(
+      before.remotes.length === 1 && before.remotes[0].name === 'origin',
+      'T20 远程仓库是从 git 本身读出来的',
+      JSON.stringify(before.remotes.map((entry) => entry.name)),
+    );
+    check(before.upstream === null && before.hasUpstream === false, 'T20 首次推送前没有上游');
+    check(before.ahead === null && before.behind === null, 'T20 没有上游时不编造领先/落后数量');
+    check(before.setUpstream === true, 'T20 首次推送会记录上游');
+
+    // The plan is a read: it names the one command and pushes nothing.
+    const plan = await service.pushPlan();
+    check(
+      plan.args.join(' ') === 'push --porcelain --no-verify --set-upstream origin main',
+      'T20 计划里的命令是固定的那一条（没有 force、没有 fetch）',
+      plan.command,
+    );
+    check(git(originRoot, ['for-each-ref', '--format=%(refname)']) === '', 'T20 只看计划不会推送任何东西');
+
+    const pushed = await service.push();
+    check(pushed.pushed === true && pushed.setUpstream === true, 'T20 首次推送新建远程分支并记录上游');
+    check(
+      git(originRoot, ['rev-parse', 'refs/heads/main']) === git(repoRoot, ['rev-parse', 'HEAD']),
+      'T20 提交真的到了远程',
+    );
+
+    const after = await service.remoteStatus();
+    check(after.upstream !== null && after.upstream.full === 'origin/main', 'T20 推送后上游是 origin/main');
+    check(after.ahead === 0 && after.behind === 0, 'T20 推送后与上游一致');
+    check(after.setUpstream === false, 'T20 已有上游时不再带 --set-upstream');
+
+    const again = await service.push();
+    check(again.upToDate === true && again.pushed === false, 'T20 没有新提交时报告「远程已经是最新的」');
+
+    // 凭据永不落地：远程 URL 里的 user:token 不会出现在服务返回的任何字段里。
+    const SECRET = 'ghp_acceptance_secret';
+    git(repoRoot, ['remote', 'add', 'withcredential', `https://user:${SECRET}@example.com/x.git`]);
+    const credentialed = await service.remoteStatus();
+    check(
+      JSON.stringify(credentialed).includes(SECRET) === false,
+      'T20 远程 URL 里的凭据不会出现在返回结果里',
+      credentialed.remotes.map((entry) => entry.url).join(' , '),
+    );
+    check(
+      redactCredentials(`https://user:${SECRET}@example.com/x.git`) === 'https://example.com/x.git',
+      'T20 凭据是整个 userinfo 被剥掉，不是只遮密码',
+    );
+    git(repoRoot, ['remote', 'remove', 'withcredential']);
+
+    // 远程名必须是 git 报告过的名字：任何像参数的东西都到不了命令行。
+    let badRemote = null;
+    try {
+      await service.push({ remote: '--force' });
+    } catch (cause) {
+      badRemote = cause;
+    }
+    check(
+      badRemote !== null && /unknown remote/.test(String(badRemote.message)),
+      'T20 不存在的远程名被拒绝（--force 进不了命令行）',
+      String(badRemote && badRemote.message),
+    );
+
+    // 远程前进（别人推了提交）：推送必须被拒绝，且不 force、不 fetch、本地远程都不动。
+    const peerRoot = mkdtempSync(join(tmpdir(), 'hve-peer10-'));
+    try {
+      git(tmpdir(), ['clone', '-q', originRoot, peerRoot]);
+      git(peerRoot, ['config', 'user.name', 'Someone Else']);
+      git(peerRoot, ['config', 'user.email', 'else@example.test']);
+      writeFileSync(join(peerRoot, 'theirs.md'), 'their work\n', 'utf8');
+      git(peerRoot, ['add', '-A']);
+      git(peerRoot, ['commit', '-q', '-m', 'T20 别人推的提交']);
+      git(peerRoot, ['push', '-q', 'origin', 'main']);
+    } finally {
+      rmSync(peerRoot, { recursive: true, force: true });
+    }
+    const remoteHead = git(originRoot, ['rev-parse', 'refs/heads/main']);
+
+    writeFileSync(join(siteRoot, 'content', 'post', 'article.md'), '# article\n\nlocal\n', 'utf8');
+    await service.commit({ message: 'T20 本地提交', paths: ['content/post/article.md'] });
+    const localHead = git(repoRoot, ['rev-parse', 'HEAD']);
+    const trackingBefore = git(repoRoot, ['rev-parse', 'refs/remotes/origin/main']);
+
+    let refused = null;
+    try {
+      await service.push();
+    } catch (cause) {
+      refused = cause;
+    }
+    check(
+      refused !== null && refused.name === 'GitPushError',
+      'T20 远程前进后推送被拒绝，而不是靠 force 解决',
+      String(refused && refused.name),
+    );
+    check(
+      refused !== null && refused.reason === 'rejected-non-fast-forward',
+      'T20 拒绝的原因是分好类的（面板据此给建议）',
+      String(refused && refused.reason),
+    );
+    check(git(repoRoot, ['rev-parse', 'HEAD']) === localHead, 'T20 被拒绝后本地分支没有移动');
+    check(git(originRoot, ['rev-parse', 'refs/heads/main']) === remoteHead, 'T20 被拒绝后远程没有被改写');
+    check(
+      git(repoRoot, ['rev-parse', 'refs/remotes/origin/main']) === trackingBefore,
+      'T20 被拒绝时没有偷偷 fetch（本地跟踪引用原样不动）',
+    );
+
+    // 游离 HEAD：没有分支可推，这是状态不是崩溃。
+    git(repoRoot, ['checkout', '-q', '--detach']);
+    let detached = null;
+    try {
+      await service.push();
+    } catch (cause) {
+      detached = cause;
+    }
+    check(
+      detached !== null && detached.reason === 'detached-head',
+      'T20 游离 HEAD 给出 detached-head',
+      String(detached && detached.reason),
+    );
+    git(repoRoot, ['checkout', '-q', 'main']);
+
+    // 没有远程仓库：同样是分类好的状态。
+    const lonelyRoot = mkdtempSync(join(tmpdir(), 'hve-git10-noremote-'));
+    try {
+      const lonelySite = join(lonelyRoot, 'site');
+      mkdirSync(lonelySite, { recursive: true });
+      git(lonelyRoot, ['init', '-q', '--initial-branch=main']);
+      const lonely = createGitService({ siteRoot: lonelySite });
+      let noRemote = null;
+      try {
+        await lonely.push();
+      } catch (cause) {
+        noRemote = cause;
+      }
+      check(
+        noRemote !== null && noRemote.reason === 'no-remote',
+        'T20 没有远程仓库时给出 no-remote',
+        String(noRemote && noRemote.reason),
+      );
+    } finally {
+      rmSync(lonelyRoot, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+    rmSync(originRoot, { recursive: true, force: true });
+  }
+}
 console.log('');
 
 if (failures === 0) {
@@ -1872,6 +2051,7 @@ if (failures === 0) {
   console.log('Phase 8 Markdown 验收通过 ✅  工具栏 / 快捷键 / 斜杠命令 / 对话框都走同一张命令表，只改选中的文字，磁盘上的文档逐字节未动。');
   console.log('Phase 8 Git 验收通过 ✅  状态 / diff / 日志 / show 只读，提交只包含勾选的文件，破坏性命令不在白名单里。');
   console.log('Phase 9 Git 工作流验收通过 ✅  已暂存/未暂存分开统计、各自有 diff，提交后索引为空，历史一行即整次提交的补丁，站点之外的文件被如实标记，读操作不移动 HEAD 与索引。');
+  console.log('Phase 10 推送验收通过 ✅  计划即命令（无 force / 无 fetch），首次推送记录上游，远程前进时被拒绝且本地与远程都不动，凭据不出现在任何返回值里。');
 } else {
   console.log(`验收失败 ❌  ${failures} 项未通过`);
 }

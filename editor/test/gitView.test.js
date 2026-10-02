@@ -7,11 +7,18 @@ import assert from 'node:assert/strict';
 import {
   DIFF_SCOPES,
   KIND_LETTER,
+  aheadBehindLabel,
   changeCountsLabel,
   commitBlockedReason,
   diffScopeLabel,
   emptyScopeHint,
   preferredScope,
+  pushBlockedReason,
+  pushButtonLabel,
+  pushFailureNotice,
+  pushResultLabel,
+  pushSummary,
+  pushTargetLabel,
   repositoryNotice,
   scopeSwitchAvailable,
   visibleChanges,
@@ -102,4 +109,120 @@ test('every kind the git service can report has a letter in the panel', () => {
     assert.equal(KIND_LETTER[kind].length, 1);
   }
   assert.equal(new Set(Object.values(KIND_LETTER)).size, Object.keys(KIND_LETTER).length, 'letters collide');
+});
+
+// --- Phase 10: the push box -------------------------------------------------
+
+test('the ahead/behind badge shows only what is actually there', () => {
+  assert.equal(aheadBehindLabel({ ahead: 3, behind: 0 }), '↑3');
+  assert.equal(aheadBehindLabel({ ahead: 0, behind: 2 }), '↓2');
+  assert.equal(aheadBehindLabel({ ahead: 3, behind: 2 }), '↑3 ↓2');
+  // In step, or nothing known yet: no badge at all, because "0" and "unknown" are not news.
+  assert.equal(aheadBehindLabel({ ahead: 0, behind: 0 }), null);
+  assert.equal(aheadBehindLabel({ ahead: null, behind: null }), null);
+  assert.equal(aheadBehindLabel({}), null);
+  assert.equal(aheadBehindLabel(), null);
+});
+
+test('the push summary tells "nothing to send" apart from "the other side is unknown"', () => {
+  const first = pushSummary({ hasUpstream: false, ahead: null, behind: null });
+  assert.match(first.text, /首次推送/);
+  assert.match(first.text, /上游/);
+
+  const unknown = pushSummary({ hasUpstream: true, ahead: null, behind: null });
+  assert.match(unknown.text, /无法确定/);
+  assert.equal(unknown.tone, 'warn');
+
+  const inStep = pushSummary({ hasUpstream: true, ahead: 0, behind: 0 });
+  assert.match(inStep.text, /没有未推送的提交/);
+  assert.equal(inStep.tone, 'muted');
+
+  const ahead = pushSummary({ hasUpstream: true, ahead: 3, behind: 0 });
+  assert.match(ahead.text, /3 个提交等待推送/);
+  assert.equal(ahead.tone, 'info');
+
+  // Behind is the case that ends in a refusal, and the wording says so before the click.
+  const behind = pushSummary({ hasUpstream: true, ahead: 0, behind: 2 });
+  assert.match(behind.text, /落后远程 2 个提交/);
+  assert.equal(behind.tone, 'warn');
+
+  const both = pushSummary({ hasUpstream: true, ahead: 1, behind: 1 });
+  assert.match(both.text, /1 个提交等待推送/);
+  assert.match(both.text, /落后远程 1 个提交/);
+  assert.equal(both.tone, 'warn');
+
+  // A push sends commits only, so uncommitted work is named rather than implied to be included.
+  assert.equal(pushSummary({ hasUpstream: true, ahead: 1, behind: 0, uncommitted: 4 }).note, '未提交的 4 个文件不会随这次推送出去。');
+  assert.equal(pushSummary({ hasUpstream: true, ahead: 1, behind: 0 }).note, null);
+});
+
+test('the target names the branch a push would write', () => {
+  assert.equal(pushTargetLabel({ remote: 'origin', branch: 'main' }), 'origin/main');
+  assert.match(pushTargetLabel({ remote: 'origin', branch: 'main', setUpstream: true }), /本次新建/);
+  assert.equal(pushTargetLabel({ remote: null, branch: 'main' }), null);
+  assert.equal(pushTargetLabel({ remote: 'origin', branch: null }), null);
+  assert.equal(pushTargetLabel(), null);
+});
+
+test('the push button always says why it is disabled, in the order it would be fixed', () => {
+  const repo = { branch: 'main', detached: false, remote: 'origin', remotes: [{ name: 'origin' }] };
+  assert.equal(pushBlockedReason({ busy: true, state: repo }), '正在推送…');
+  assert.equal(pushBlockedReason({ state: null }), '正在读取远程信息…');
+  assert.match(pushBlockedReason({ state: { ...repo, detached: true, branch: null } }), /游离 HEAD/);
+  assert.match(pushBlockedReason({ state: { ...repo, remote: null, remotes: [] } }), /没有配置远程仓库/);
+  // Several remotes and none of them the obvious one: the service refuses to guess, and so does this.
+  assert.match(
+    pushBlockedReason({ state: { ...repo, remote: null, remotes: [{ name: 'a' }, { name: 'b' }] } }),
+    /多个远程仓库/,
+  );
+  assert.equal(pushBlockedReason({ state: repo }), null);
+  assert.equal(pushBlockedReason(), '正在读取远程信息…');
+});
+
+test('the push button is two-step, and the second step names the remote', () => {
+  assert.equal(pushButtonLabel({ stage: 'idle', remote: 'origin', ahead: 3 }), '推送到 origin（3 个提交）');
+  assert.equal(pushButtonLabel({ stage: 'idle', remote: 'origin', ahead: 0 }), '推送到 origin');
+  assert.equal(pushButtonLabel({ stage: 'idle', remote: null, ahead: null }), '推送到 远程');
+  assert.equal(pushButtonLabel({ stage: 'confirm', remote: 'origin', ahead: 3 }), '确认推送到 origin');
+});
+
+test('the result says whether anything actually travelled', () => {
+  assert.equal(pushResultLabel({ pushed: true, remote: 'origin', branch: 'main' }), '已推送 main → origin/main');
+  assert.match(
+    pushResultLabel({ pushed: true, remote: 'origin', branch: 'main', setUpstream: true }),
+    /已设为上游/,
+  );
+  assert.equal(pushResultLabel({ upToDate: true, remote: 'origin', branch: 'main' }), '远程已经是最新的：origin/main');
+  assert.equal(pushResultLabel({ remote: 'origin', branch: 'main' }), '远程没有需要更新的 ref：origin/main');
+  assert.equal(pushResultLabel(), '远程没有需要更新的 ref：/');
+});
+
+test('every push failure reason has wording and, where one exists, a command to fix it', () => {
+  for (const reason of [
+    'no-remote',
+    'detached-head',
+    'no-credentials',
+    'rejected-non-fast-forward',
+    'rejected-by-remote',
+    'remote-unreadable',
+    'network',
+    'unknown',
+  ]) {
+    const notice = pushFailureNotice(reason);
+    assert.equal(typeof notice.title, 'string', `${reason} has no title`);
+    assert.equal(typeof notice.text, 'string', `${reason} has no explanation`);
+  }
+
+  // The two that a user can actually act on must hand over a runnable line.
+  assert.match(pushFailureNotice('no-credentials').command, /^gh auth login/);
+  assert.match(pushFailureNotice('no-credentials').text, /不会保存、也不会接受任何凭据/);
+  assert.match(pushFailureNotice('rejected-non-fast-forward').command, /^git pull/);
+  assert.match(pushFailureNotice('rejected-non-fast-forward').text, /不会替你 fetch、merge 或 force/);
+  assert.equal(pushFailureNotice('network').command, null, 'there is no command that fixes the network');
+  assert.equal(pushFailureNotice('rejected-by-remote').command, null, 'that one belongs to the remote');
+
+  // A reason this build does not know still says something true rather than nothing.
+  assert.equal(pushFailureNotice('something-new').title, '推送失败');
+  assert.equal(pushFailureNotice(null).title, '推送失败');
+  assert.equal(pushFailureNotice(undefined).title, '推送失败');
 });

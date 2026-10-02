@@ -516,6 +516,7 @@ TODO (not done, both small):
 Reuse first, as always: this phase added **no new endpoint and no new dependency**. `gitService.js`
 grew a flag, `gitView.js` was extracted from `GitPanel.vue`, and `show()` grew a path. The panel
 still reads one repository and writes exactly one thing - a commit of the paths the user ticked.
+(Phase 10 added the second write, `push`; see the Phase 10 notes at the end of this file.)
 
 * **`staged` and `unstaged` are two questions, not a synonym for "changed".** `parseStatus` keeps
   the two porcelain columns (`index`, `worktree`) and `classifyStatus` maps them per change:

@@ -15,14 +15,19 @@ import { join } from 'node:path';
 import {
   GitCommandError,
   GitNotARepositoryError,
+  GitPushError,
   GitValidationError,
   assertCommitMessage,
   assertSitePath,
+  classifyPushFailure,
   classifyRepositoryFailure,
   classifyStatus,
   createGitService,
   parseNumstat,
+  parsePushPorcelain,
   parseStatus,
+  parseUpstream,
+  redactCredentials,
 } from '../src/git/index.js';
 
 const GIT_ENV = {
@@ -55,6 +60,27 @@ function makeRepo({ branch = 'main' } = {}) {
 const repos = [];
 function repo(options) {
   const dir = makeRepo(options);
+  repos.push(dir);
+  return dir;
+}
+
+// A remote that is a real repository: a bare one in the same temp directory. A push to it exercises
+// everything a push to GitHub exercises - refs, objects, a rejection when the branch moved on -
+// with no network and no credential, which is what makes it testable here at all.
+function makeOrigin() {
+  const dir = mkdtempSync(join(tmpdir(), 'editor-origin-'));
+  git(dir, ['init', '-q', '--bare', '--initial-branch=main']);
+  repos.push(dir);
+  return dir;
+}
+
+// A second working copy of the same origin, so a test can move the remote's branch behind the
+// editor's back - the situation a push must refuse to resolve by force.
+function makePeer(origin) {
+  const dir = mkdtempSync(join(tmpdir(), 'editor-peer-'));
+  git(dir, ['clone', '-q', origin, dir]);
+  git(dir, ['config', 'user.name', 'Someone Else']);
+  git(dir, ['config', 'user.email', 'else@example.test']);
   repos.push(dir);
   return dir;
 }
@@ -125,7 +151,22 @@ test('the two ways a repository probe fails are told apart, because the advice d
 test('only allow-listed subcommands can be run, so no destructive git command exists', async () => {
   const dir = repo();
   const service = createGitService({ siteRoot: dir });
-  for (const forbidden of ['reset', 'clean', 'checkout', 'restore', 'push', 'stash']) {
+  // `push` joined the allow-list in Phase 10, but only behind `push()`, which validates the remote
+  // against the ones that exist and builds its own argument vector. Everything that could rewrite
+  // history, discard work or reach the network unbidden is still absent.
+  for (const forbidden of [
+    'reset',
+    'clean',
+    'checkout',
+    'restore',
+    'stash',
+    'fetch',
+    'pull',
+    'merge',
+    'rebase',
+    'gc',
+    'init',
+  ]) {
     await assert.rejects(() => service.run([forbidden, '--hard']), /is not allowed by the git service/);
   }
 });
@@ -414,7 +455,8 @@ test('reading the repository moves neither HEAD nor the index', async () => {
   const headBefore = git(dir, ['rev-parse', 'HEAD']);
   const indexBefore = readFileSync(join(dir, '.git', 'index'));
 
-  // Every read the panel can make, including the untracked branch that diffs against /dev/null.
+  // Every read the panel can make, including the untracked branch that diffs against /dev/null, and
+  // the remotes/upstream probe the push box reads.
   await service.status();
   await service.diff({ path: 'README.md' });
   await service.diff({ path: 'new.md' });
@@ -422,6 +464,7 @@ test('reading the repository moves neither HEAD nor the index', async () => {
   await service.diff({});
   await service.log({ limit: 5 });
   await service.show({ sha: headBefore });
+  await service.remoteStatus();
   await service.detectRepository({ force: true });
 
   assert.equal(git(dir, ['rev-parse', 'HEAD']), headBefore, 'HEAD moved while only reading');
@@ -430,3 +473,328 @@ test('reading the repository moves neither HEAD nor the index', async () => {
   assert.equal(staged, '', 'reading staged something');
 });
 
+
+// --- Phase 10: the push ----------------------------------------------------
+//
+// Everything here runs against repositories in the temp directory: a real bare `origin` next to a
+// real working copy. A push to GitHub differs from a push to `mkdtemp` in exactly one way - the
+// transport - so proving the refs, the upstream, the refusal and the argument vector here is the
+// honest test, and it never touches the user's repository or the network.
+
+test('the remote status is read from the repository, and a branch with no upstream says so', async () => {
+  const origin = makeOrigin();
+  const dir = repo();
+  git(dir, ['remote', 'add', 'origin', origin]);
+  const service = createGitService({ siteRoot: dir, cacheMs: 0 });
+
+  const state = await service.remoteStatus();
+  assert.deepEqual(state.remotes.map((entry) => entry.name), ['origin']);
+  assert.equal(state.remotes[0].url, origin, 'the URL is what git has, not a guess');
+  assert.equal(state.branch, 'main');
+  assert.equal(state.detached, false);
+  assert.equal(state.remote, 'origin');
+  assert.equal(state.upstream, null);
+  assert.equal(state.hasUpstream, false);
+  assert.equal(state.setUpstream, true, 'a first push is the one that records the upstream');
+  assert.equal(state.ahead, null, 'nothing here fetches, so the other side is unknown until a push');
+  assert.equal(state.behind, null);
+
+  // With no remote at all the same read answers differently, and `remote` is null rather than 'origin'.
+  const lonely = createGitService({ siteRoot: repo(), cacheMs: 0 });
+  const lonelyState = await lonely.remoteStatus();
+  assert.deepEqual(lonelyState.remotes, []);
+  assert.equal(lonelyState.remote, null);
+});
+
+test('a push sends the branch, records the upstream, and says what moved', async () => {
+  const origin = makeOrigin();
+  const dir = repo();
+  git(dir, ['remote', 'add', 'origin', origin]);
+  const service = createGitService({ siteRoot: dir, cacheMs: 0 });
+
+  const pushed = await service.push();
+  assert.equal(pushed.pushed, true);
+  assert.equal(pushed.upToDate, false);
+  assert.equal(pushed.rejected, false);
+  assert.equal(pushed.remote, 'origin');
+  assert.equal(pushed.branch, 'main');
+  assert.equal(pushed.setUpstream, true);
+  assert.equal(pushed.upstream.full, 'origin/main');
+  assert.equal(pushed.refs[0].flag, '*', 'a first push creates the ref');
+  assert.equal(git(origin, ['rev-parse', 'refs/heads/main']), git(dir, ['rev-parse', 'HEAD']), 'the commit arrived');
+
+  const after = await service.remoteStatus();
+  assert.deepEqual(after.upstream, { remote: 'origin', branch: 'main', full: 'origin/main' });
+  assert.equal(after.hasUpstream, true);
+  assert.equal(after.setUpstream, false, 'the upstream is recorded, so no -u next time');
+  assert.equal(after.ahead, 0);
+  assert.equal(after.behind, 0);
+
+  // Nothing to send is an outcome, not a failure: git says `=` and the panel says "already there".
+  const again = await service.push();
+  assert.equal(again.upToDate, true);
+  assert.equal(again.pushed, false);
+  assert.equal(again.refs[0].flag, '=');
+
+  // One more commit: the count the panel shows before pushing has to be the commit that travels.
+  writeFileSync(join(dir, 'article.md'), 'second\n');
+  await service.commit({ message: 'second', paths: ['article.md'] });
+  const ahead = await service.remoteStatus();
+  assert.equal(ahead.ahead, 1);
+  assert.equal(ahead.behind, 0);
+  assert.equal(ahead.setUpstream, false);
+
+  const second = await service.push();
+  assert.equal(second.pushed, true);
+  assert.equal(second.setUpstream, false, 'an existing upstream is not rewritten');
+  assert.equal(git(origin, ['rev-list', '--count', 'refs/heads/main']), '2');
+});
+
+test('a push never forces: a remote that moved on is refused, and nothing is rewritten', async () => {
+  const origin = makeOrigin();
+  const dir = repo();
+  git(dir, ['remote', 'add', 'origin', origin]);
+  const service = createGitService({ siteRoot: dir, cacheMs: 0 });
+  await service.push();
+
+  // Someone else pushes to the same branch - the case a "just force it" button would destroy.
+  const peer = makePeer(origin);
+  writeFileSync(join(peer, 'their.md'), 'their work\n');
+  git(peer, ['add', '-A']);
+  git(peer, ['commit', '-q', '-m', 'their commit']);
+  git(peer, ['push', '-q', 'origin', 'main']);
+  const remoteHead = git(origin, ['rev-parse', 'refs/heads/main']);
+
+  writeFileSync(join(dir, 'article.md'), 'local work\n');
+  await service.commit({ message: 'local', paths: ['article.md'] });
+  const localHead = git(dir, ['rev-parse', 'HEAD']);
+  // What the local repository believes about the remote, before the refusal.
+  const trackingBefore = git(dir, ['rev-parse', 'refs/remotes/origin/main']);
+
+  await assert.rejects(
+    () => service.push(),
+    (error) => {
+      assert.equal(error.name, 'GitPushError');
+      assert.equal(error.reason, 'rejected-non-fast-forward');
+      assert.match(error.stderr, /rejected/i, "git's own words travel with the refusal");
+      return true;
+    },
+  );
+
+  // The refusal is total: the local branch is where it was, the remote still holds the other commit,
+  // and nothing was fetched to find that out - the local tracking ref is exactly as stale as it was.
+  assert.equal(git(dir, ['rev-parse', 'HEAD']), localHead);
+  assert.equal(git(origin, ['rev-parse', 'refs/heads/main']), remoteHead);
+  assert.equal(git(dir, ['rev-parse', 'refs/remotes/origin/main']), trackingBefore);
+
+  // Which is why the panel says the tracking ref may be out of date: the local repository still
+  // believes it is ahead (there is no way to know otherwise without fetching), and the refusal is
+  // what told the truth.
+  const after = await service.remoteStatus();
+  assert.equal(after.ahead, 1);
+  assert.equal(after.behind, 0, 'a stale tracking ref cannot report being behind');
+});
+
+test('a push decision is read fresh, not served from the status cache', async () => {
+  const origin = makeOrigin();
+  const dir = repo();
+  git(dir, ['remote', 'add', 'origin', origin]);
+  // A long cache, and a status read that fills it: the push decision must ignore both, because a
+  // branch switched in a terminal a moment ago is the branch the user means - and publishing the one
+  // they just left is exactly the kind of surprise a push button must not produce.
+  const service = createGitService({ siteRoot: dir, cacheMs: 60_000 });
+  assert.equal((await service.remoteStatus()).branch, 'main');
+
+  git(dir, ['checkout', '-q', '-b', 'other']);
+  const moved = await service.remoteStatus();
+  assert.equal(moved.branch, 'other', 'the branch read before the switch was served from the cache');
+  const plan = await service.pushPlan();
+  assert.deepEqual(plan.args, ['push', '--porcelain', '--no-verify', '--set-upstream', 'origin', 'other']);
+
+  git(dir, ['checkout', '-q', '--detach']);
+  const detached = await service.remoteStatus();
+  assert.equal(detached.detached, true);
+  assert.equal(detached.branch, null);
+  await assert.rejects(
+    () => service.push(),
+    (error) => error.name === 'GitPushError' && error.reason === 'detached-head',
+  );
+});
+
+test('a push is refused before it runs when there is nowhere to push, or no branch to push', async () => {
+  // No remote at all.
+  const lonely = createGitService({ siteRoot: repo(), cacheMs: 0 });
+  await assert.rejects(
+    () => lonely.push(),
+    (error) => error.name === 'GitPushError' && error.reason === 'no-remote',
+  );
+
+  // A remote name that does not exist is the interesting one: a name is matched against the remotes
+  // git reports, so a remote that looks like a flag can never reach the command line.
+  const origin = makeOrigin();
+  const dir = repo();
+  git(dir, ['remote', 'add', 'origin', origin]);
+  const service = createGitService({ siteRoot: dir, cacheMs: 0 });
+  for (const remote of ['--force', '-x', 'upstream', 'origin\n--force']) {
+    await assert.rejects(() => service.push({ remote }), /unknown remote/);
+  }
+  assert.equal(git(origin, ['for-each-ref', '--format=%(refname)']), '', 'nothing reached the remote');
+
+  // A detached HEAD has no branch to push.
+  const detached = repo();
+  git(detached, ['remote', 'add', 'origin', origin]);
+  git(detached, ['checkout', '-q', '--detach']);
+  const detachedService = createGitService({ siteRoot: detached, cacheMs: 0 });
+  await assert.rejects(
+    () => detachedService.push(),
+    (error) => error.name === 'GitPushError' && error.reason === 'detached-head',
+  );
+});
+
+test('the plan and the push are the same command, and it never carries a force, a delete or a token', async () => {
+  // A repository that exists only as answers, so the exact argument vector can be asserted without
+  // running anything. This is also the only honest way to test what happens to a token in a remote
+  // URL: the runner hands back a URL that has one, and nothing that leaves the service may keep it.
+  const TOKEN = 'ghp_deadbeefdeadbeef';
+  const calls = [];
+  function fakeService({ upstream = 'origin/main', ahead = 2, behind = 0 } = {}) {
+    const runner = async (args) => {
+      calls.push(args);
+      const key = args.join(' ');
+      const ok = (stdout) => ({ stdout, stderr: '', code: 0 });
+      if (key === 'rev-parse --show-toplevel --absolute-git-dir') return ok('/tmp/fake-repo\n/tmp/fake-repo/.git\n');
+      if (key === 'rev-parse --abbrev-ref HEAD') return ok('main\n');
+      if (key === 'rev-parse --short HEAD') return ok('abc1234\n');
+      if (key === 'remote') return ok('origin\n');
+      if (key === 'remote get-url origin') return ok(`https://user:${TOKEN}@example.com/x.git\n`);
+      if (key === 'rev-parse --abbrev-ref --symbolic-full-name @{upstream}') {
+        return upstream
+          ? ok(`${upstream}\n`)
+          : { stdout: '', stderr: 'fatal: no upstream configured for branch\n', code: 128 };
+      }
+      if (key === 'rev-list --left-right --count origin/main...HEAD') return ok(`${behind}\t${ahead}\n`);
+      if (args[0] === 'push') {
+        return ok(`To https://user:${TOKEN}@example.com/x.git\n*\trefs/heads/main:refs/heads/main\t[new branch]\nDone\n`);
+      }
+      throw new Error(`unexpected git call: ${key}`);
+    };
+    return createGitService({ siteRoot: '/tmp/fake-repo', cacheMs: 0, runner });
+  }
+
+  const service = fakeService();
+  const plan = await service.pushPlan();
+  assert.deepEqual(plan.args, ['push', '--porcelain', '--no-verify', 'origin', 'main']);
+  assert.equal(plan.command, 'git push --porcelain --no-verify origin main');
+  assert.equal(plan.ahead, 2);
+  assert.equal(plan.setUpstream, false);
+  assert.equal(plan.remote.url, 'https://example.com/x.git', 'the URL shown to the user carries no credential');
+
+  const result = await service.push();
+  const pushArgs = calls.filter((args) => args[0] === 'push');
+  assert.equal(pushArgs.length, 1, 'a push is one git call');
+  assert.deepEqual(pushArgs[0], plan.args, 'the push runs exactly the arguments the plan showed');
+  assert.equal(result.pushed, true);
+  assert.equal(result.remoteUrl, 'https://example.com/x.git');
+  assert.doesNotMatch(result.output, new RegExp(TOKEN), "git's own output is scrubbed too");
+  assert.doesNotMatch(result.target, new RegExp(TOKEN));
+
+  // A branch with no upstream is the one case that adds `-u`, and it is still not a force.
+  const fresh = fakeService({ upstream: null, ahead: null });
+  const firstPlan = await fresh.pushPlan();
+  assert.deepEqual(firstPlan.args, ['push', '--porcelain', '--no-verify', '--set-upstream', 'origin', 'main']);
+  assert.equal(firstPlan.setUpstream, true);
+  assert.equal(firstPlan.ahead, null, 'an unknown distance stays unknown');
+
+  // Nothing this service can send may look like a history rewrite.
+  for (const args of calls) {
+    for (const forbidden of ['--force', '-f', '--delete', '--mirror', '--tags', '--all', '--prune', '--no-verify=false']) {
+      assert.equal(args.includes(forbidden), false, `${args.join(' ')} must not carry ${forbidden}`);
+    }
+  }
+});
+
+test('a push failure is classified from what git actually prints', () => {
+  // The real messages, captured from this machine's git - the classifier is checked against the
+  // output it will really meet, not against what we imagine git says.
+  assert.equal(
+    classifyPushFailure('!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)'),
+    'rejected-non-fast-forward',
+  );
+  assert.equal(
+    classifyPushFailure(
+      'remote: error: GH006: Protected branch update failed\n ! [remote rejected] main -> main (protected branch hook declined)',
+    ),
+    'rejected-by-remote',
+  );
+  assert.equal(
+    classifyPushFailure("fatal: could not read Username for 'https://github.com': terminal prompts disabled"),
+    'no-credentials',
+  );
+  assert.equal(
+    classifyPushFailure('git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.'),
+    'no-credentials',
+  );
+  assert.equal(
+    classifyPushFailure(
+      "fatal: unable to access 'https://127.0.0.1:9/x.git/': Failed to connect to 127.0.0.1 port 9 after 0 ms: Could not connect to server",
+    ),
+    'network',
+  );
+  assert.equal(classifyPushFailure('fatal: Could not resolve host: github.com'), 'network');
+  assert.equal(
+    classifyPushFailure(
+      "fatal: '/tmp/nope.git' does not appear to be a git repository\nPlease make sure you have the correct access rights and the repository exists.",
+    ),
+    'remote-unreadable',
+  );
+  assert.equal(
+    classifyPushFailure("remote: Repository not found.\nfatal: repository 'https://github.com/x/y.git/' not found"),
+    'remote-unreadable',
+  );
+  assert.equal(classifyPushFailure('fatal: no configured push destination.'), 'no-remote');
+  assert.equal(classifyPushFailure(''), 'unknown');
+});
+
+test('the porcelain output is parsed as ref updates, so "sent" and "already there" differ', () => {
+  const created = parsePushPorcelain(
+    'To https://example.com/x.git\n*\trefs/heads/main:refs/heads/main\t[new branch]\nDone\n',
+  );
+  assert.equal(created.pushed, true);
+  assert.equal(created.upToDate, false);
+  assert.deepEqual(created.refs, [
+    { flag: '*', from: 'refs/heads/main', to: 'refs/heads/main', summary: '[new branch]' },
+  ]);
+
+  const current = parsePushPorcelain('To /tmp/origin.git\n=\trefs/heads/main:refs/heads/main\t[up to date]\nDone\n');
+  assert.equal(current.upToDate, true);
+  assert.equal(current.pushed, false);
+
+  // A credential in the target line must not survive the parse either.
+  const target = parsePushPorcelain('To https://user:ghp_x@example.com/x.git\nDone\n');
+  assert.equal(target.target, 'https://example.com/x.git');
+  assert.equal(parsePushPorcelain('').refs.length, 0);
+  assert.equal(parsePushPorcelain(undefined).pushed, false);
+});
+
+test('an upstream name is split on its first slash, because a branch may contain one', () => {
+  assert.deepEqual(parseUpstream('origin/main'), { remote: 'origin', branch: 'main', full: 'origin/main' });
+  assert.deepEqual(parseUpstream('origin/feature/deep\n'), {
+    remote: 'origin',
+    branch: 'feature/deep',
+    full: 'origin/feature/deep',
+  });
+  assert.equal(parseUpstream(''), null);
+  assert.equal(parseUpstream('@{upstream}'), null);
+  assert.equal(parseUpstream('no-slash'), null);
+  assert.equal(parseUpstream('origin/'), null);
+});
+
+test('a credential in a URL never reaches the panel', () => {
+  assert.equal(redactCredentials('https://user:ghp_secret@github.com/x/y.git'), 'https://github.com/x/y.git');
+  assert.equal(redactCredentials('https://ghp_secret@github.com/x/y.git'), 'https://github.com/x/y.git');
+  assert.equal(redactCredentials('http://user:pa ss@host/x'), 'http://user:pa ss@host/x', 'a space is not a URL');
+  // The ssh form carries no secret, and rewriting it would mangle ordinary text this also runs over.
+  assert.equal(redactCredentials('git@github.com:FenrisOwO/x.git'), 'git@github.com:FenrisOwO/x.git');
+  assert.equal(redactCredentials(''), '');
+  assert.equal(redactCredentials(null), '');
+});
