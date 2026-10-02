@@ -33,10 +33,21 @@ const HUGO = process.env.HUGO_BIN ?? (existsSync('/projects/.bin/hugo') ? '/proj
 const SECTION = 'post';
 
 let failures = 0;
+let skips = 0;
 
 function check(ok, label, detail = '') {
   console.log(`  ${ok ? '✅' : '❌'} ${label}${detail ? `  — ${detail}` : ''}`);
   if (!ok) failures += 1;
+}
+
+// A scenario whose subject is gone from the site (the owner deleted the demo articles, or keeps
+// a demo bundle `draft`) is reported as skipped rather than failed: the site content is the
+// owner's decision, and a missing subject is not a regression. It is not a pass either - the
+// run stays non-zero while anything is skipped, so a green exit always means "every scenario
+// ran against the content it was written for".
+function skip(label, reason = '') {
+  console.log(`  ⚠️ 跳过 ${label}${reason ? `  — ${reason}` : ''}`);
+  skips += 1;
 }
 
 function walk(dir, out = []) {
@@ -1065,6 +1076,7 @@ console.log('T14 Phase 6：真实站点二进制资源（新增 / 替换 / 删�
   }
 
   let cleanupTrashId = null;
+  let galleryPublished = false;
   try {
     console.log(`     driver : ${resources.location}`);
 
@@ -1099,22 +1111,39 @@ console.log('T14 Phase 6：真实站点二进制资源（新增 / 替换 / 删�
 
     const built1 = await buildNow();
     check(built1.state === 'success', '新增 + 替换后构建成功', built1.message);
-    check(
-      await converge(() => existsSync(PUBLISHED_UPLOAD) && fileSha(PUBLISHED_UPLOAD) === bufferSha(PNG)),
-      '新增的图片出现在 public/ 里',
-    );
-    check(
-      await converge(() => fileSha(PUBLISHED_REFERENCED) === bufferSha(replacementBytes)),
-      '被替换图片的输出字节随之更新',
-    );
+
+    // The bundle this scenario uses is the theme's demo gallery, and the owner keeps it
+    // `draft: true` in every language. Hugo then publishes neither the page nor its resources,
+    // so a check that watches public/ for them cannot hold - it is skipped with that reason
+    // rather than failed, because the draft flag is the owner's content decision and not a
+    // regression. Everything below this line that watches public/ is gated on the same fact;
+    // the on-disk half of the lifecycle (write -> backup -> build -> trash -> restore, and the
+    // byte-exact restore of the source tree) is verified either way.
+    const galleryPublishedNow = existsSync(join(SITE_ROOT, 'public', 'p', 'image-gallery', 'index.html'));
+    galleryPublished = galleryPublishedNow;
+    if (!galleryPublishedNow) {
+      skip('T14 的 public/ 跟随检查（新增 / 替换 / 删除 / 恢复）', 'post/Image Gallery 的 4 个语言文件都是 draft: true，Hugo 不发布该页面及其资源');
+    }
+    if (galleryPublishedNow) {
+      check(
+        await converge(() => existsSync(PUBLISHED_UPLOAD) && fileSha(PUBLISHED_UPLOAD) === bufferSha(PNG)),
+        '新增的图片出现在 public/ 里',
+      );
+      check(
+        await converge(() => existsSync(PUBLISHED_REFERENCED) && fileSha(PUBLISHED_REFERENCED) === bufferSha(replacementBytes)),
+        '被替换图片的输出字节随之更新',
+      );
+    }
     check(
       readFileSync(join(CONTENT_ROOT, GALLERY, 'index.md'), 'utf8') === markdownBefore,
       '资源操作没有改写引用它的 Markdown（路径不变，引用继续有效）',
     );
-    check(
-      readFileSync(join(SITE_ROOT, 'public', 'p', 'image-gallery', 'index.html'), 'utf8').includes('hudai-gayiran-3Od_VKcDEAA-unsplash'),
-      '构建后的页面仍然引用该资源',
-    );
+    if (galleryPublishedNow) {
+      check(
+        readFileSync(join(SITE_ROOT, 'public', 'p', 'image-gallery', 'index.html'), 'utf8').includes('hudai-gayiran-3Od_VKcDEAA-unsplash'),
+        '构建后的页面仍然引用该资源',
+      );
+    }
 
     // Delete: a reversible move, and the output follows - the file is gone from public/ too.
     const removePlan = await resources.planRemove(uploadPath);
@@ -1124,8 +1153,10 @@ console.log('T14 Phase 6：真实站点二进制资源（新增 / 替换 / 删�
 
     const built2 = await buildNow();
     check(built2.state === 'success', '删除后构建成功', built2.message);
-    check(await converge(() => !existsSync(PUBLISHED_UPLOAD)), '删除的图片不再出现在 public/ 里（发布清单裁剪）');
-    check(existsSync(PUBLISHED_REFERENCED), '同一目录里未被删除的图片仍然在 public/ 里');
+    if (galleryPublishedNow) {
+      check(await converge(() => !existsSync(PUBLISHED_UPLOAD)), '删除的图片不再出现在 public/ 里（发布清单裁剪）');
+      check(existsSync(PUBLISHED_REFERENCED), '同一目录里未被删除的图片仍然在 public/ 里');
+    }
 
     // Restore: the trash moves the identical bytes back, and the preview follows again.
     const restored = await resources.restore(deleted.trashId);
@@ -1134,10 +1165,12 @@ console.log('T14 Phase 6：真实站点二进制资源（新增 / 替换 / 删�
 
     const built3 = await buildNow();
     check(built3.state === 'success', '恢复后构建成功', built3.message);
-    check(
-      await converge(() => existsSync(PUBLISHED_UPLOAD) && fileSha(PUBLISHED_UPLOAD) === bufferSha(PNG)),
-      '恢复的图片重新出现在 public/ 里',
-    );
+    if (galleryPublishedNow) {
+      check(
+        await converge(() => existsSync(PUBLISHED_UPLOAD) && fileSha(PUBLISHED_UPLOAD) === bufferSha(PNG)),
+        '恢复的图片重新出现在 public/ 里',
+      );
+    }
   } finally {
     // The user's site goes back exactly as it was, through the same two operations a person
     // would use: the test image is deleted again (so it lands in the trash rather than
@@ -1157,11 +1190,13 @@ console.log('T14 Phase 6：真实站点二进制资源（新增 / 替换 / 删�
   const finalBuild = await buildNow();
   check(finalBuild.state === 'success', '清理后构建成功', finalBuild.message);
   check(fileSha(join(CONTENT_ROOT, REFERENCED)) === referencedBefore, '被替换的图片已按字节还原');
-  check(await converge(() => !existsSync(PUBLISHED_UPLOAD)), '验收产生的临时图片没有留在 public/ 里');
-  check(
-    await converge(() => fileSha(PUBLISHED_REFERENCED) === referencedBefore),
-    '被替换图片的输出也回到原字节',
-  );
+  if (galleryPublished) {
+    check(await converge(() => !existsSync(PUBLISHED_UPLOAD)), '验收产生的临时图片没有留在 public/ 里');
+    check(
+      await converge(() => existsSync(PUBLISHED_REFERENCED) && fileSha(PUBLISHED_REFERENCED) === referencedBefore),
+      '被替换图片的输出也回到原字节',
+    );
+  }
   check(Boolean(cleanupTrashId), '清理走的也是回收站（临时图片可人工恢复）', cleanupTrashId ?? '');
 
   const contentAfter = sourceHashes();
@@ -1251,7 +1286,7 @@ async function p7Converge(predicate, { attempts = 4, betweenMs = 6000 } = {}) {
 }
 
 console.log('T15 Phase 7：真实站点标签关系（跨文档改名 / 同义合并 / 元数据页迁移 + 构建后 taxonomy 变化）');
-{
+t15: {
   const documents = createDocumentService({
     contentRoot: CONTENT_ROOT,
     siteRoot: SITE_ROOT,
@@ -1265,6 +1300,18 @@ console.log('T15 Phase 7：真实站点标签关系（跨文档改名 / 同义�
   const RENAMED_PAGE = 'tags/Gallery 相册/_index.md';
   const MARKER = `PHASE7-META-${process.pid}${Date.now()}`;
   const sample = join(CONTENT_ROOT, 'post', 'pagination-test-01.en.md');
+
+  // The scenario below is written around one English article: it merges a tag across every
+  // document that carries it, checks Hugo's taxonomy output for the merged and the vanished
+  // term, and reads the published page of that article to see the new tag in it. The owner
+  // deleted the demo articles in 59ad158, so the subject is gone - the scenario is skipped as a
+  // whole (with its write steps and its cleanup) instead of failing on content the site no
+  // longer has. Restoring the demo corpus or pointing the gate at a fixture copy is the open
+  // decision recorded in AGENTS.md under "Phase Insert C"; it is not a 1.0 blocker.
+  if (!existsSync(sample)) {
+    skip('T15 标签关系场景（跨文档合并 / 元数据页迁移）', `站点缺少 ${relative(CONTENT_ROOT, sample)}（演示文章已删除，属于站点内容漂移）`);
+    break t15;
+  }
 
   const tags = p7Server
     ? {
@@ -2079,7 +2126,7 @@ console.log('T20 Phase 10：远程推送（首次 / 上游 / 已是最新 / 被�
 }
 console.log('');
 
-if (failures === 0) {
+if (failures === 0 && skips === 0) {
   console.log('P1 + P2 验收通过 ✅  写入路径显式、空操作逐字节一致、失败构建不发布、源树不被构建改动。');
   console.log('Phase 3 内容管理验收通过 ✅  副本上的新建 / 表单编辑 / 删除 / 恢复都只动副本。');
   console.log('Phase 4 内容类型验收通过 ✅  Article / Page / Category / Other 与三种 bundle 形态都可查看、编辑、创建、删除并恢复。');
@@ -2091,7 +2138,12 @@ if (failures === 0) {
   console.log('Phase 8 Git 验收通过 ✅  状态 / diff / 日志 / show 只读，提交只包含勾选的文件，破坏性命令不在白名单里。');
   console.log('Phase 9 Git 工作流验收通过 ✅  已暂存/未暂存分开统计、各自有 diff，提交后索引为空，历史一行即整次提交的补丁，站点之外的文件被如实标记，读操作不移动 HEAD 与索引。');
   console.log('Phase 10 推送验收通过 ✅  计划即命令（无 force / 无 fetch），首次推送记录上游，远程前进时被拒绝且本地与远程都不动，凭据不出现在任何返回值里。');
+} else if (failures === 0) {
+  console.log(`验收未全绿 ⚠️  ${skips} 个场景因站点内容与验收语料不一致而被跳过（站点内容属于你的决定，不是回归；见 AGENTS.md「Phase Insert C」的待定项）。`);
 } else {
-  console.log(`验收失败 ❌  ${failures} 项未通过`);
+  console.log(`验收失败 ❌  ${failures} 项未通过${skips > 0 ? `，另有 ${skips} 个场景被跳过` : ''}`);
 }
-process.exit(failures === 0 ? 0 : 1);
+// Skipping is not passing: exit 0 means every scenario ran against the content it was written
+// for. The skipped ones are content drift (deleted demo articles, a demo bundle kept draft),
+// recorded in AGENTS.md, and they are not regressions in the editor.
+process.exit(failures === 0 && skips === 0 ? 0 : 1);
