@@ -98,7 +98,7 @@ const DEFAULTS = {
   // Optional override of the section -> type mapping (article / page / taxonomy). Left null
   // so the service derives it from the site's own config rather than from the editor's.
   contentKinds: null,
-  port: 1313,
+  port: 1314,
   host: '0.0.0.0',
   // Phase 2
   autoBuildOnSave: true,
