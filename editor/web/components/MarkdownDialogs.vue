@@ -46,16 +46,73 @@ const titles = {
   codeBlock: '插入代码块',
 };
 
-// The resources of the bundle this document belongs to: Hugo resolves `![](image.webp)` next to
-// the page, so those are the files a Markdown reference can name.
+// The resources of the bundle this document belongs to: Hugo resolves a page resource by its
+// path INSIDE the page's own bundle, so those are the only files a bundle-relative Markdown
+// reference can name. A standalone post has no bundle at all, and the list is empty.
 const bundleResources = computed(() => {
   const bundle = (assets.value?.bundles ?? []).find((entry) => entry.bundlePath === props.bundlePath);
   return bundle?.resources ?? [];
 });
 
+// static/ is copied to the site root and is reachable from any page, so its files are offered
+// too - for a standalone post they are the only local choice. The reference is the site URL.
+const staticImages = computed(() => (assets.value?.static ?? []).filter((asset) => asset.type === 'image'));
+
 const canUpload = computed(() => {
   const bundle = (assets.value?.bundles ?? []).find((entry) => entry.bundlePath === props.bundlePath);
   return Boolean(bundle?.canUpload ?? bundle?.capabilities?.upload ?? true);
+});
+
+// What this value would do, according to the server's reference model. Null while unknown
+// (before the first answer, or while the field is empty).
+const referenceVerdict = ref(null);
+const verdictPending = ref(false);
+let verdictTimer = null;
+
+function referenceFor(resource) {
+  return resource?.reference?.value ?? null;
+}
+
+function resourceReason(resource) {
+  return resource?.reference?.reason ?? '这个资源不能作为本文的 Markdown 引用。';
+}
+
+function chooseResource(resource) {
+  const reference = referenceFor(resource);
+  if (reference === null) {
+    error.value = resourceReason(resource);
+    return;
+  }
+  src.value = reference;
+}
+
+async function checkReference() {
+  const value = src.value.trim();
+  if (value === '' || props.documentPath === '') {
+    referenceVerdict.value = null;
+    return null;
+  }
+  verdictPending.value = true;
+  try {
+    const body = await api(`/api/documents/reference?path=${encodeURIComponent(props.documentPath)}&value=${encodeURIComponent(value)}`);
+    referenceVerdict.value = body.verdict;
+    return body.verdict;
+  } catch (cause) {
+    referenceVerdict.value = null;
+    error.value = `无法校验引用：${cause.message ?? cause}`;
+    return null;
+  } finally {
+    verdictPending.value = false;
+  }
+}
+
+// Live feedback while typing, so a source path is visible as broken before it is inserted.
+watch(src, () => {
+  if (!isImage.value) return;
+  if (verdictTimer) clearTimeout(verdictTimer);
+  verdictTimer = setTimeout(() => {
+    void checkReference();
+  }, 350);
 });
 
 async function api(path, options) {
@@ -77,6 +134,7 @@ watch(
     if (next === 'image') {
       alt.value = props.selectedText.trim();
       src.value = '';
+      referenceVerdict.value = null;
       assets.value = null;
       try {
         assets.value = await api('/api/assets');
@@ -91,19 +149,6 @@ watch(
   },
 );
 
-// A resource in the same directory is referenced by file name, like Hugo expects for a leaf
-// bundle; anything else keeps a path relative to the document's own directory.
-function referenceFor(resource) {
-  const documentDir = props.documentPath.includes('/') ? props.documentPath.slice(0, props.documentPath.lastIndexOf('/')) : '';
-  const resourceDir = resource.path.includes('/') ? resource.path.slice(0, resource.path.lastIndexOf('/')) : '';
-  if (documentDir !== '' && resourceDir === documentDir) return resource.filename ?? resource.path.split('/').pop();
-  return resource.path;
-}
-
-function chooseResource(resource) {
-  src.value = referenceFor(resource);
-}
-
 function apply() {
   if (isLink.value) {
     if (!url.value.trim()) {
@@ -114,11 +159,7 @@ function apply() {
     return;
   }
   if (isImage.value) {
-    if (!src.value.trim()) {
-      error.value = '请选择一个资源，或填写图片路径。';
-      return;
-    }
-    emit('apply', { id: 'image', arg: { src: src.value.trim(), alt: alt.value } });
+    void applyImage();
     return;
   }
   if (isTable.value) {
@@ -126,6 +167,28 @@ function apply() {
     return;
   }
   emit('apply', { id: 'codeBlock', arg: { language: language.value, code: code.value || null } });
+}
+
+// The reference is checked before it reaches the document: a path Hugo cannot resolve is
+// refused here, with the reason, instead of being written and only failing after a deploy.
+async function applyImage() {
+  const value = src.value.trim();
+  if (!value) {
+    error.value = '请选择一个资源，或填写图片路径。';
+    return;
+  }
+  error.value = null;
+  busy.value = true;
+  try {
+    const checked = referenceVerdict.value?.value === value ? referenceVerdict.value : await checkReference();
+    if (checked && checked.ok !== true) {
+      error.value = checked.reason + (checked.suggestion ? ` 建议：${checked.suggestion}` : '');
+      return;
+    }
+    emit('apply', { id: 'image', arg: { src: value, alt: alt.value } });
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function readFile(file) {
@@ -143,7 +206,11 @@ async function upload(file) {
   error.value = null;
   pending.value = null;
   try {
-    if (!props.bundlePath) throw new Error('当前文档不是一个 bundle，无法上传资源。请改用 assets/ 或 static/ 里的文件。');
+    if (!props.bundlePath) {
+      throw new Error(
+        '当前文档是单文件文章（不在 bundle 里），Hugo 不会把它旁边的文件当成页面资源。请改用 static/ 里的图片（/路径），或把文章改成 index.md + 图片同目录的 bundle。',
+      );
+    }
     const dataBase64 = await readFile(file);
     // Plan first, exactly like the assets view: nothing is written until the confirm below.
     const plan = await api('/api/assets/upload', {
@@ -227,8 +294,12 @@ function onPick(event) {
       </label>
       <label class="field">
         <span>路径 / 资源</span>
-        <input v-model="src" type="text" placeholder="image.webp 或 https://…" :disabled="busy" />
+        <input v-model="src" type="text" placeholder="image.webp、/img/logo.png 或 https://…" :disabled="busy" />
       </label>
+      <p class="hint">
+        引用只有三种能解析：本文 bundle 内的相对路径（<code>image.webp</code>）、static/ 的站点 URL（<code>/img/logo.png</code>）、外部地址。
+        内容树路径（<code>categories/Documentation/x.jpg</code>）与 <code>assets/</code> 都不会被解析。
+      </p>
 
       <div class="drop" @dragover.prevent @drop.prevent="onDrop">
         <p>把图片拖到这里，或者</p>
@@ -251,6 +322,10 @@ function onPick(event) {
 
       <div v-if="assets" class="resources">
         <h4>同一 bundle 里的资源（{{ bundleResources.length }}）</h4>
+        <p v-if="bundleResources.length === 0" class="hint">
+          当前文档不是 bundle（单文件文章），它旁边的图片不是 Hugo 页面资源。用下面的 static 文件，或把文章改成
+          <code>index.md</code> + 图片同目录的 bundle。
+        </p>
         <p v-if="canUpload === false" class="hint warn">这个 bundle 不在可写范围内，只能选择已有资源。</p>
         <div class="resource-grid">
           <button
@@ -258,8 +333,9 @@ function onPick(event) {
             :key="resource.path"
             type="button"
             class="resource"
-            :class="{ active: src === referenceFor(resource) }"
-            :disabled="busy"
+            :class="{ active: src === referenceFor(resource), unusable: !referenceFor(resource) }"
+            :disabled="busy || !referenceFor(resource)"
+            :title="referenceFor(resource) ? `引用：${referenceFor(resource)}` : resourceReason(resource)"
             @click="chooseResource(resource)"
           >
             <img v-if="resource.previewUrl" :src="resource.previewUrl" :alt="resource.filename" />
@@ -267,7 +343,36 @@ function onPick(event) {
             <code>{{ resource.filename ?? resource.path }}</code>
           </button>
         </div>
+
+        <template v-if="staticImages.length > 0">
+          <h4>static/ 里的图片（{{ staticImages.length }}）</h4>
+          <p class="hint">static/ 里的文件发布在站点根目录，任何页面都能用 <code>/路径</code> 引用。</p>
+          <div class="resource-grid">
+            <button
+              v-for="asset in staticImages"
+              :key="asset.path"
+              type="button"
+              class="resource"
+              :class="{ active: src === referenceFor(asset) }"
+              :disabled="busy"
+              :title="`引用：${referenceFor(asset)}`"
+              @click="chooseResource(asset)"
+            >
+              <img v-if="asset.previewUrl" :src="asset.previewUrl" :alt="asset.filename" />
+              <span v-else class="placeholder">—</span>
+              <code>{{ referenceFor(asset) }}</code>
+            </button>
+          </div>
+        </template>
       </div>
+
+      <p v-if="referenceVerdict && referenceVerdict.ok" class="hint ok">
+        可以解析：{{ referenceVerdict.kind === 'external' ? '外部地址' : referenceVerdict.kind === 'site-url' ? '站点 URL' : '页面资源（本文 bundle 内）' }}
+      </p>
+      <p v-else-if="referenceVerdict" class="hint warn">
+        {{ referenceVerdict.reason }}<template v-if="referenceVerdict.suggestion"> 建议：<code>{{ referenceVerdict.suggestion }}</code></template>
+      </p>
+      <p v-else-if="verdictPending" class="hint">正在校验引用…</p>
     </template>
 
     <template v-else-if="isTable">
@@ -392,5 +497,15 @@ function onPick(event) {
 
 .hint.warn {
   color: var(--warning);
+}
+
+.hint.ok {
+  color: var(--success);
+}
+
+.resource.unusable {
+  opacity: 0.5;
+  cursor: not-allowed;
+  border-style: dashed;
 }
 </style>

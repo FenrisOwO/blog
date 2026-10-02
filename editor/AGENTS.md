@@ -10,6 +10,8 @@ delete / restore). Where Phase 1 could only write one section, the editor now co
 `post`, `page`, `categories` and the content root. Phase 6 added binary resources,
 Phase 7 the cross-document relations (tags and a page's `links:` list) - each of them a
 named change set, one confirmation, then a transaction with read-back verification.
+Phase Insert E added the reference model: which strings in Markdown and in front matter
+Hugo can actually resolve into an image, checked before anything is written.
 
 ## Commands
 

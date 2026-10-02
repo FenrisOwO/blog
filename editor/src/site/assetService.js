@@ -19,6 +19,7 @@ import { join, resolve, sep } from 'node:path';
 
 import { ASSET_MAX_BYTES, UPLOAD_EXTENSIONS, atomicWriteBytes, formatBytes, mimeForExtension, sha256Bytes, sniffBytes } from './bytes.js';
 import { describeSiteAsset, suggestAvailableName, validateAssetFileName } from './resourceModel.js';
+import { bundleOfDocument, classifyReference } from './referenceModel.js';
 import { createBackup } from './safeWrite.js';
 import { moveToTrash } from './trash.js';
 
@@ -79,6 +80,7 @@ export function createAssetService({
   contentRoot,
   staticRoot = null,
   assetRoot = null,
+  publishDir = null,
   backupRoot,
   guard,
   documents,
@@ -279,7 +281,9 @@ export function createAssetService({
 
   function resolveUploadTarget({ bundlePath, filename }) {
     if (typeof bundlePath !== 'string') throw new AssetValidationError('缺少目标 bundle');
-    if (bundlePath === '') throw new AssetValidationError('内容根目录不是 bundle，本阶段不支持上传到此处');
+    if (bundlePath === '') {
+      throw new AssetValidationError('内容根目录不是 bundle，无法上传到此处；请把图片放进某个 bundle，或放进 static/ 后用 /路径 引用');
+    }
     const check = validateAssetFileName(filename);
     if (!check.ok) throw new AssetValidationError(check.reason);
     const targetPath = toPosix(`${bundlePath}/${filename}`);
@@ -469,11 +473,49 @@ export function createAssetService({
     return documents.trash();
   }
 
+  // --- the reference verdict (Phase Insert E: images) ----------------------
+
+  // Is `/…` a file the last build actually published? The published tree is the evidence, so
+  // the answer never comes from a rule the editor invented about Hugo's permalinks.
+  function isPublished(url) {
+    if (!publishDir) return null;
+    const withoutQuery = String(url).split(/[?#]/)[0].replace(/^\/+/, '');
+    let relative;
+    try {
+      relative = decodeURIComponent(withoutQuery);
+    } catch {
+      relative = withoutQuery;
+    }
+    if (relative === '' || relative.split('/').includes('..')) return false;
+    return existsSync(join(publishDir, relative));
+  }
+
+  // The one place that answers "will Hugo resolve this string, in this document?" - used by
+  // the front-matter form (covers) and by the Markdown image dialog.
+  async function referenceVerdict({ documentPath, value }) {
+    if (typeof documentPath !== 'string' || documentPath === '') {
+      throw new AssetValidationError('缺少文档路径');
+    }
+    const listing = await listAssets();
+    const bundlePath = bundleOfDocument(documentPath);
+    const bundle = listing.bundles.find((entry) => entry.bundlePath === bundlePath) ?? null;
+    return classifyReference(value, {
+      documentPath,
+      bundlePath,
+      bundleResources: (bundle?.resources ?? []).map((resource) => resource.relativePath),
+      contentResources: listing.bundles.flatMap((entry) => entry.resources.map((resource) => resource.path)),
+      staticPaths: listing.static.map((asset) => asset.path),
+      assetPaths: listing.assets.map((asset) => asset.path),
+      isPublished,
+    });
+  }
+
   return {
     siteRoot,
     contentRoot,
     staticRoot,
     assetRoot,
+    publishDir,
     backupRoot,
     maxBytes,
     listAssets,
@@ -488,6 +530,8 @@ export function createAssetService({
     remove,
     restore,
     trashEntries,
+    referenceVerdict,
+    isPublished,
     assetPreviewUrl,
   };
 }

@@ -294,6 +294,9 @@ export function createEditorServer(options = {}) {
       contentRoot: config.contentRoot,
       staticRoot,
       assetRoot,
+      // Phase Insert E: the published tree is what decides whether an absolute-path
+      // reference is real, so the asset service gets the output directory too.
+      publishDir: sitePublic,
       backupRoot: config.backupRoot,
       guard: service.guard,
       documents: service,
@@ -566,6 +569,31 @@ export function createEditorServer(options = {}) {
     return true;
   }
 
+  // Phase Insert E: the images a page shows are the ones the front matter can resolve. The
+  // form used to show a cover string without a verdict, so `categories/Documentation/x.jpg`
+  // looked as good as a bundle-relative name and only failed after deploy. Now every
+  // reference field is classified against this document before the form renders it.
+  const REFERENCE_FIELDS = new Set(['image']);
+
+  async function withReferenceVerdicts(documentPath, model) {
+    const fields = model?.fields;
+    if (!Array.isArray(fields)) return model;
+    const targets = fields.filter(
+      (field) => REFERENCE_FIELDS.has(field.key) && typeof field.value === 'string' && field.value.trim() !== '',
+    );
+    if (documentPath === '' || targets.length === 0) return model;
+    const verdicts = await Promise.all(
+      targets.map((field) => assetService.referenceVerdict({ documentPath, value: field.value })),
+    );
+    return {
+      ...model,
+      fields: fields.map((field) => {
+        const index = targets.indexOf(field);
+        return index < 0 ? field : { ...field, reference: verdicts[index] };
+      }),
+    };
+  }
+
   async function handle(req, res) {
     const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
     const { pathname } = url;
@@ -733,7 +761,18 @@ export function createEditorServer(options = {}) {
     // Same shape as the raw-text path: a separate dry run, and a write that needs confirm.
 
     if (pathname === '/api/documents/fields' && req.method === 'GET') {
-      sendJson(res, 200, service.fields(url.searchParams.get('path') ?? ''));
+      sendJson(res, 200, await withReferenceVerdicts(url.searchParams.get('path') ?? '', service.fields(url.searchParams.get('path') ?? '')));
+      return;
+    }
+
+    // The verdict for one reference value in one document - the same answer the form gets
+    // for a cover, asked on demand for a Markdown destination the user typed by hand.
+    if (pathname === '/api/documents/reference' && req.method === 'GET') {
+      const verdict = await assetService.referenceVerdict({
+        documentPath: url.searchParams.get('path') ?? '',
+        value: url.searchParams.get('value') ?? '',
+      });
+      sendJson(res, 200, { verdict });
       return;
     }
 
@@ -759,7 +798,8 @@ export function createEditorServer(options = {}) {
       }
       const result = service.saveFields({ path: body.path, set: body.set, remove: body.remove });
       const scheduled = result.status !== 'noop' && afterSourceWrite([body.path]);
-      sendJson(res, 200, { ...result, buildScheduled: scheduled });
+      const model = await withReferenceVerdicts(body.path, result.fields);
+      sendJson(res, 200, { ...result, fields: model, buildScheduled: scheduled });
       return;
     }
 

@@ -125,6 +125,20 @@ watch(edits, (next) => emit('edits', next), { deep: true });
                 spellcheck="false"
               />
             </template>
+
+            <p v-if="field.reference && !field.reference.ok" class="ref-warn">
+              当前值 <code>{{ field.value }}</code> 无法被 Hugo 解析：{{ field.reference.reason }}
+              <button
+                v-if="field.reference.suggestion"
+                type="button"
+                class="mini"
+                :disabled="disabled"
+                @click="drafts[field.path] = field.reference.suggestion"
+              >
+                用建议值 {{ field.reference.suggestion }}
+              </button>
+            </p>
+            <p v-else-if="field.reference" class="ref-ok">这个引用可以被 Hugo 解析（{{ field.reference.kind }}）。</p>
           </div>
 
           <button
@@ -249,8 +263,27 @@ label {
 .input,
 .locked {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-sm);
   align-items: center;
+}
+
+/* The reference verdict is about the value, not a control, so it takes the whole row. */
+.ref-warn,
+.ref-ok {
+  flex: 0 0 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--warning);
+}
+
+.ref-ok {
+  color: var(--success);
 }
 
 .input > input,

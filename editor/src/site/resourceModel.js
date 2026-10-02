@@ -15,6 +15,7 @@
 import { basename, extname } from 'node:path';
 
 import { isPreviewableMime, mimeForExtension, typeForMime } from './bytes.js';
+import { referenceForResource, referenceForStatic } from './referenceModel.js';
 
 export const ASSET_LOCATIONS = ['content', 'static', 'assets'];
 
@@ -64,11 +65,16 @@ export function describeResource({
   const mimeType = mimeForExtension(extension);
   const readOnly = READ_ONLY_LOCATIONS.has(location);
   const canWrite = writable && !readOnly;
+  const relative = toPosix(relativePath ?? name);
+  // How a document should name this file. A content resource is only addressable from the
+  // document that owns its bundle, so the reference is bundle-relative; a static file is
+  // addressed by URL. This is what the UI copies, so no one has to assemble a path again.
+  const reference = referenceFor(location, path, relative, bundle);
 
   return {
     id: assetId({ location, path }),
     path: toPosix(path),
-    relativePath: toPosix(relativePath ?? name),
+    relativePath: relative,
     filename: name,
     base: baseOfName(name),
     extension,
@@ -84,6 +90,7 @@ export function describeResource({
     ownerDocument: bundle?.documentPath ?? null,
     contentKind: bundle?.contentKind ?? null,
     section: bundle?.section ?? null,
+    reference,
     // Reference hints are filled in by the reader, from the documents it already parsed.
     referenced: false,
     referencedBy: [],
@@ -93,6 +100,39 @@ export function describeResource({
       delete: canWrite,
       upload: false,
     },
+  };
+}
+
+function referenceFor(location, path, relative, bundle) {
+  if (location === 'static') {
+    const { reference } = referenceForStatic(relative);
+    return { kind: 'site-url', value: reference, usableFrom: 'any document', reason: null };
+  }
+  if (location === 'assets') {
+    return {
+      kind: 'pipeline-asset',
+      value: null,
+      usableFrom: null,
+      reason: 'assets/ 是 Hugo 管线资源；Markdown 与 front matter 都引用不到它。',
+    };
+  }
+  if (!bundle || !bundle.bundlePath) {
+    return {
+      kind: 'no-bundle',
+      value: null,
+      usableFrom: null,
+      reason: '这个文件不在任何 bundle 里，Hugo 不会把它当成页面资源。',
+    };
+  }
+  // One implementation answers "what is this page resource called", for the listing and for
+  // the check the editor runs on a value someone typed. The listing cannot offer a reference
+  // the check would refuse.
+  const verdict = referenceForResource({ bundlePath: bundle.bundlePath, resourcePath: path });
+  return {
+    kind: verdict.kind,
+    value: verdict.reference ?? null,
+    usableFrom: verdict.ok ? bundle.bundlePath : null,
+    reason: verdict.reason ?? null,
   };
 }
 
