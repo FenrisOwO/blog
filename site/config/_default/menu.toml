@@ -4,7 +4,8 @@
     url        = "https://github.com/FenrisOwO"
 
     [social.params]
-        icon = "brand-github"
+        icon = "custom-github-logo"
+        newTab = true
 
 [[social]]
     identifier = "twitter"
@@ -12,6 +13,27 @@
     url        = "https://twitter.com/fenrisfree"
 
     [social.params]
-        icon = "brand-twitter"
+        icon = "custom-twitter-logo"
+        newTab = true
 
 
+
+
+[[social]]
+    identifier = "QQ"
+    name       = "QQ"
+    url        = "https://qm.qq.com/cgi-bin/qm/qr?k=Mlxr6DFkkg_pFThhU10KrtWdSrErrPu4&noverify=0"
+
+    [social.params]
+        icon = "custom-qq_logo_icon_238099"
+        newTab = true
+
+
+[[social]]
+    identifier = "Bilibili"
+    name       = "Bilibili"
+    url        = "https://space.bilibili.com/174863977"
+
+    [social.params]
+        icon = "custom-television-simple"
+        newTab = true
