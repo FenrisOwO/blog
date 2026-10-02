@@ -1,32 +1,97 @@
 /*!
 *   Site-level overrides (imported last by the theme's style.scss)
 *
-*   Typography: EB Garamond for Latin, Zhuque Fangsong (朱雀仿宋) for CJK.
-*   EB Garamond ships no CJK glyphs, so Chinese text falls through to
-*   Zhuque Fangsong; native FangSong faces cover users without the webfont.
+*   Typography hierarchy - one layer per rule, so a layer can be changed on its own:
+*
+*       headings   EB Garamond (Latin) + a 黑体-class CJK sans
+*       body       Literata (Latin) + Zhuque Fangsong 朱雀仿宋 (CJK)
+*       UI / meta  等线-class sans (DengXian, then the platform's UI sans)
+*
+*   Every family below is a stack, never a single face. Neither EB Garamond nor Literata
+*   ships CJK glyphs, so Chinese in a title or a paragraph falls through to the next family
+*   by itself: mixed 中英 runs need no per-character classes, and each script keeps its own
+*   face. All three fonts are self-hosted (static/fonts/, SIL OFL 1.1); the terms live on
+*   /fonts/ and in each font's LICENSE.txt.
 */
 
 :root {
-    --base-font-family:
-        "EB Garamond", "Zhuque Fangsong",
-        FangSong, "FangSong_GB2312", STFangsong, "仿宋",
-        var(--sys-font-family), serif;
+    /* UI, navigation, menus, metadata, tags, buttons, footer: never a serif. */
+    --ui-font-family:
+        "DengXian", "等线",
+        var(--sys-font-family),
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑",
+        "Source Han Sans SC", "Noto Sans CJK SC", "Noto Sans SC",
+        sans-serif;
 
-    --article-font-family:
-        "EB Garamond", "Zhuque Fangsong",
-        FangSong, "FangSong_GB2312", STFangsong, "仿宋",
-        serif;
+    /* Headings: the Latin face first, the CJK 黑体 stack as its companion. */
+    --heading-font-family:
+        "EB Garamond",
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "微软雅黑",
+        "Source Han Sans SC", "Noto Sans CJK SC", "Noto Sans SC",
+        "Heiti SC", SimHei, sans-serif;
+
+    /* Reading text: Literata for Latin, 朱雀仿宋 for CJK. The native 仿宋 faces are what a
+       visitor without the webfonts falls back to, and they match Zhuque's style. */
+    --reading-font-family:
+        "Literata", "Zhuque Fangsong",
+        FangSong, "FangSong_GB2312", STFangsong, "仿宋", "Songti SC", serif;
+
+    --base-font-family: var(--ui-font-family);
+    --article-font-family: var(--reading-font-family);
+
+    /* Body copy tuned for continuous reading: a hair larger than the theme's default
+       (朱雀仿宋 has a small apparent size next to Literata), with the theme's generous
+       line-height - that pairing is what keeps the two scripts on one baseline grid. */
+    --article-font-size: 1.65rem;
+    --article-line-height: 1.85;
+
+    @include respond(md) {
+        --article-font-size: 1.75rem;
+    }
 }
 
-/* Font attribution rendered by the site footer */
+/* The theme hands the *article* font to titles; headings are their own layer. */
+.article-title,
+.article-subtitle {
+    font-family: var(--heading-font-family);
+    font-weight: 600;
+    /* Display text only: a balanced two-line title instead of a lonely last word. */
+    text-wrap: balance;
+}
+
+.article-content {
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+        font-family: var(--heading-font-family);
+        font-weight: 600;
+        text-wrap: balance;
+    }
+}
+
+/* Footnotes are body text, not UI: the theme hands them the base (now UI) font. Spelled with
+   the theme's own selector so it keeps winning at the same specificity. */
+.article-page .main-article .article-content .footnotes {
+    font-family: var(--article-font-family);
+}
+
+/* Font attribution in the footer: three quiet lines and a link to the terms, not the terms. */
 footer.site-footer .font-credits {
-    margin-top: 6px;
+    margin-top: var(--spacing-xs);
     font-size: 1.2rem;
-    line-height: 1.7;
-    color: var(--card-text-color-tertiary);
+    color: var(--body-text-color);
 
     a {
-        color: inherit;
+        color: var(--body-text-color);
         text-decoration: underline;
+        text-decoration-color: var(--card-separator-color);
+        text-underline-offset: 2px;
+
+        &:hover {
+            color: var(--accent-color);
+        }
     }
 }
