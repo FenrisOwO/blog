@@ -252,6 +252,9 @@ console.log('T5  隔离：编辑器产物不得出现在 site/ 或 Hugo 输出�
 }
 
 // T6 - the site still builds, from the same content, with hugo.
+// Its page count is kept: T7 asserts the editor's own publish loop against it, so neither
+// scenario freezes a number that the owner's next article would invalidate.
+let hugoHtmlPages = 0;
 console.log('T6  构建：Hugo 仍然构建成功');
 {
   const workDir = mkdtempSync(join(tmpdir(), 'hve-accept-'));
@@ -264,6 +267,7 @@ console.log('T6  构建：Hugo 仍然构建成功');
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
     const pages = walk(destination).filter((file) => file.endsWith('.html')).length;
+    hugoHtmlPages = pages;
     const leaked = walk(destination).filter((file) => /editor/i.test(relative(destination, file)));
     check(pages > 0, `构建成功，产出 ${pages} 个 HTML 页面`, output.split('\n').find((line) => line.startsWith('Total in')) ?? '');
     check(leaked.length === 0, '构建产物中没有编辑器文件');
@@ -300,7 +304,13 @@ console.log('T7  构建闭环：BuildService 构建真实站点并发布到 site
   const indexPath = join(SITE_ROOT, 'public', 'index.html');
   check(existsSync(indexPath), 'site/public/index.html 已生成');
   const pages = existsSync(join(SITE_ROOT, 'public')) ? walk(join(SITE_ROOT, 'public')).filter((f) => f.endsWith('.html')).length : 0;
-  check(pages > 100, `输出中有 ${pages} 个 HTML 页面`);
+  // The contract is "the editor's publish loop produces what Hugo produces", not a number
+  // frozen at whatever the site size was when this line was written. T6 builds the same source
+  // with plain Hugo; its count is the reference, and a *shrink* is the regression to catch.
+  check(
+    hugoHtmlPages > 0 && pages >= hugoHtmlPages,
+    `输出中有 ${pages} 个 HTML 页面（同源 Hugo 构建 ${hugoHtmlPages} 个）`,
+  );
 
   const staged = existsSync(paths.stagingDir) ? walk(paths.stagingDir).length : 0;
   check(staged > 0, `暂存区留在 site/ 之外（${paths.stagingDir}）`);
@@ -545,13 +555,34 @@ console.log('T11 Phase 4：内容类型 / bundle 形态（在副本上执行）'
     check(singlePlan.documentCount === 1 && singlePlan.resourceCount === 0, 'Category 单文件删除只算 1 份文档', JSON.stringify(plan_sizes(singlePlan)));
     check(singlePlan.warnings.some((warning) => warning.includes('会保留')), 'Category 单文件删除提示其余文件保留');
 
+    // The expectation comes from the directory itself, the same way the content-kind counts
+    // above do: the owner adds images to a category bundle (a cover, social icons, an avatar)
+    // and that must not read as a regression. What is under test is the *shape* of the
+    // operation - every `_index.*.md` of the term plus every other file in its directory, in
+    // one recoverable move - not how many images the owner happens to keep there.
+    const categoryDir = join(contentCopy, 'categories', 'Documentation');
+    const categoryFiles = readdirSync(categoryDir).filter((name) => statSync(join(categoryDir, name)).isFile());
+    const categoryDocs = categoryFiles.filter((name) => name.endsWith('.md')).length;
+    const categoryResources = categoryFiles.length - categoryDocs;
+
     const wholePlan = service.planForDelete({ path: CATEGORY_PAGE, scope: 'bundle' });
-    check(wholePlan.documentCount === 4 && wholePlan.resourceCount === 1 && wholePlan.totalFiles === 5, 'Category 整页删除：4 语言 _index + 1 图片', JSON.stringify(plan_sizes(wholePlan)));
+    check(
+      wholePlan.documentCount === categoryDocs &&
+        wholePlan.resourceCount === categoryResources &&
+        wholePlan.totalFiles === categoryFiles.length,
+      `Category 整页删除：${categoryDocs} 语言 _index + ${categoryResources} 资源`,
+      JSON.stringify(plan_sizes(wholePlan)),
+    );
     const categoryRemoved = service.removeDocument({ path: CATEGORY_PAGE, scope: 'bundle' });
     const entries = service.trash();
     check(
-      entries.some((entry) => entry.id === categoryRemoved.trashId && entry.files === 5 && entry.entries?.length === 5),
-      '一次删除 = 一个回收站条目（5 个路径）',
+      entries.some(
+        (entry) =>
+          entry.id === categoryRemoved.trashId &&
+          entry.files === categoryFiles.length &&
+          entry.entries?.length === categoryFiles.length,
+      ),
+      `一次删除 = 一个回收站条目（${categoryFiles.length} 个路径）`,
       JSON.stringify(entries.map((entry) => [entry.relPath, entry.files])),
     );
     service.restore({ id: categoryRemoved.trashId });
