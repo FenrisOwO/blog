@@ -596,6 +596,31 @@ the same content drift as before, plus one stale count:
   bundle now carries 7 resources, so the change set is `{documents:4, resources:7, files:11}`.
 * T14 dies with the same `ENOENT` on `public/p/image-gallery/...` (the `draft: true` bundle).
 
+**Re-measured 2026-10-02 (Phase 10 acceptance-cleanup session): 223 ✅ / 0 ❌ / 2 ⚠️ skipped,
+exit 1** - with the editor stopped, the gate now runs to the end of the file (T14 → T20) and every
+check that *can* be made on this site passes. The two skipped scenarios are the site's content,
+not the editor:
+
+* T14's four `public/` checks. `post/Image Gallery` is `draft: true` in all four languages, so Hugo
+  publishes neither the page nor its resources; the rest of T14 (upload, replace with backup,
+  build, trash delete, restore, byte-exact source restore) runs and passes.
+* T15 as a whole. It is written around `post/pagination-test-01.en.md`, deleted in `59ad158`; its
+  write steps and its cleanup are skipped with it.
+
+`⚠️ 跳过` is counted apart from failures and keeps the exit code non-zero, so exit 0 still means
+every scenario ran against the content it was written for. Two *defects of the gate* found and
+fixed in this session: `plan.counts` was `undefined` in the in-process plan drivers, so T15/T16
+crashed on the first plan assertion whenever the editor server was stopped - the documented way to
+run the gate (`61a485a`); and two assertions froze the owner's content as absolute numbers
+(`6e33ff1`).
+
+Still open, unchanged by this cleanup: the gate's content dependence itself. Either keep the demo
+corpus on the site (and stay non-zero on the skipped scenarios until it is back) or point the gate
+at a fixture copy - note there are now two subjects, T14's demo gallery and T15's English article,
+so a fixture has to carry both. Also open (cosmetic, not a 1.0 blocker): a *branch* bundle's trash
+entry is labelled with its `_index.en.md` file, a *leaf* bundle's with its directory
+(`page/links`); both restore to the right place.
+
 **Run the gate with the watching editor stopped.** With the 1314 instance alive
 (`watchSources:true`, `autoBuildOnSave:true`), the script's writes wake the editor's watcher, its
 build races the script's build into the same `/tmp/hugo-editor-build/.../output` and
