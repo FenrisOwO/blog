@@ -10,7 +10,7 @@ hasCJKLanguage         = true
 theme = "hugo-theme-stack"
 
 [pagination]
-    pagerSize = 4
+    pagerSize = 10
 
 [permalinks]
     post = "/p/:slug/"
