@@ -34,7 +34,7 @@ links:
   - title: Telegram
     description: 查资料会用，有较为隐私的对话也会在tg上聊。
     website: http://t.me/fenrisuwu
-    image: telegram_icon_130816.png
+    image: tg头像.jpg
 
   - title: ===================
     description:
